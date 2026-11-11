@@ -13,12 +13,12 @@ export async function upsertMarket(m: Market) {
 export type Signal = {
   key: string; strategy: Strategy; label: string; condition?: string; token?: string; wallet?: string;
   targetAt: number; observedAt: number; expiresAt: number; reference?: number; reason?: string;
-  evidence: object; delayMs?: number;
+  evidence: object; delayMs?: number; version?: number;
 };
 export async function recordSignal(s: Signal) {
-  const rows = await database()`insert into lab.signals(key,strategy,label,condition,token,wallet,target_at,observed_at,expires_at,reference,reason,evidence,delay_ms)
+  const rows = await database()`insert into lab.signals(key,strategy,label,condition,token,wallet,target_at,observed_at,expires_at,reference,reason,evidence,delay_ms,version)
     values(${s.key},${s.strategy},${s.label},${s.condition ?? null},${s.token ?? null},${s.wallet ?? null},
-      ${date(s.targetAt)},${date(s.observedAt)},${date(s.expiresAt)},${s.reference ?? null},${s.reason ?? null},${JSON.stringify(s.evidence)},${s.delayMs ?? 0})
+      ${date(s.targetAt)},${date(s.observedAt)},${date(s.expiresAt)},${s.reference ?? null},${s.reason ?? null},${JSON.stringify(s.evidence)},${s.delayMs ?? 0},${s.version ?? 1})
     on conflict(key) do nothing returning id`;
   return rows[0]?.id as string | undefined;
 }
@@ -29,7 +29,7 @@ export async function distributeSignals() {
       when e.mode='confirm' then 'pending' else 'queued' end,
       case when e.paused or e.risk_blocked then 'risk_or_pause' else coalesce(s.reason,case when s.expires_at<=now() then 'expired' end) end,
       greatest(now(),s.observed_at+s.delay_ms*interval '1 ms')
-    from lab.signals s join lab.experiments e on e.strategy=s.strategy and e.starts_at<=s.target_at and e.ends_at>s.target_at
+    from lab.signals s join lab.experiments e on e.strategy=s.strategy and e.version=s.version and e.starts_at<=s.target_at and e.ends_at>s.target_at
       and (s.strategy<>'copy' or e.wallet=s.wallet)
     where s.observed_at>now()-interval '2 days'
     on conflict(experiment,signal) do nothing returning *

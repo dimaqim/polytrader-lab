@@ -1,6 +1,6 @@
 import { database, log } from "../server/db.ts";
-import { marketBySlug, marketSocket, numeric, orderBook, parseBook, timestamp, type Market } from "../server/polymarket.ts";
-import { distributeSignals, executeDecision, recordSignal, upsertMarket } from "../server/signals.ts";
+import { marketSocket, numeric, orderBook, parseBook, timestamp, type Market } from "../server/polymarket.ts";
+import { distributeSignals, executeDecision, recordSignal } from "../server/signals.ts";
 import { btcRule } from "../lib/strategies.ts";
 import { favorite, freshBook, makerProgress, type Book, type MakerPrint } from "../lib/simulator.ts";
 import { deliverNotifications } from "../server/telegram.ts";
@@ -84,20 +84,17 @@ function connect() {
     books.clear(); prints.clear(); lastPacket = 0;
     reconnectAt = Date.now() + Math.min(30_000, 500 * 2 ** retries++) + Math.random() * 300;
   });
-  current.addEventListener("error", () => current.close());
+  current.addEventListener("error", () => { if (current.readyState < WebSocket.CLOSING) current.close(); });
 }
 async function catalog() {
   const now = Date.now();
-  const jobs = [5, 15].flatMap(interval => {
-    const duration = interval * 60_000, start = Math.floor(now / duration) * duration;
-    return [start, start + duration].map(async time => {
-      const market = await marketBySlug(`btc-updown-${interval}m-${time / 1000}`);
-      if (!market?.open) return;
-      await upsertMarket(market);
-      markets.set(market.slug, market);
-    });
+  const active = await database()`select condition,slug,title,ends_at,interval_minutes,tokens,outcomes,prices,fee,payout,open,seen_at
+    from lab.markets where open and interval_minutes in (5,15)
+    and ends_at>now() and ends_at<now()+interval '35 minutes' and seen_at>now()-interval '4 minutes'`;
+  for (const m of active) markets.set(m.slug, {
+    condition: m.condition, slug: m.slug, title: m.title, endsAt: +new Date(m.ends_at), interval: m.interval_minutes,
+    tokens: m.tokens, outcomes: m.outcomes, prices: m.prices, fee: m.fee, payout: m.payout, open: m.open, seenAt: +new Date(m.seen_at),
   });
-  for (const result of await Promise.allSettled(jobs)) if (result.status === "rejected") await log("collector_catalog", result.reason);
   for (const m of markets.values()) if (m.endsAt < now - 60_000) {
     markets.delete(m.slug); makerQuotes.delete(m.slug); done.delete("btc:" + m.slug); done.delete("maker:" + m.slug);
   }
@@ -138,7 +135,15 @@ async function emitMaker(m: Market, at: number) {
   const continuous = !!q && q.generation === generation && socket?.readyState === WebSocket.OPEN && at - lastPacket < 20_000;
   const series = q && continuous ? prints.get(q.token) ?? [] : [];
   const bought = q ? makerProgress(series, "BUY", q.bid, q.at, at) : 0;
-  const buyConfirmedAt = q ? series.find(p => makerProgress(series, "BUY", q.bid, q.at, p.receivedAt) > q.bidQueue)?.receivedAt : undefined;
+  let buyConfirmedAt: number | undefined;
+  if (q) {
+    let through = 0;
+    for (const print of series) {
+      if (print.receivedAt <= q.at || print.receivedAt > at || print.side !== "SELL" || print.price >= q.bid) continue;
+      through += print.size;
+      if (through > q.bidQueue) { buyConfirmedAt = print.receivedAt; break; }
+    }
+  }
   const sold = q && buyConfirmedAt ? makerProgress(series, "SELL", q.ask, buyConfirmedAt, at) : 0;
   const modeledShares = q && continuous ? Math.max(0, Math.min(bought - q.bidQueue, sold - q.askQueue)) : 0;
   await recordSignal({ key: "maker:" + m.slug, strategy: "maker", condition: m.condition, token: q?.token,

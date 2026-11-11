@@ -119,14 +119,20 @@ async function scanCombos() {
 }
 
 async function marketCoverage(now: number) {
-  const rows = await database()`select condition,slug,title,ends_at,interval_minutes from lab.markets where interval_minutes is not null
-    and ends_at>now()-interval '3 minutes' and ends_at<now()+interval '65 seconds'`;
-  for (const m of rows) {
-    const end = +new Date(m.ends_at);
-    const rule = btcRule(m.interval_minutes, end);
-    if (now <= rule.target + 5000) continue;
-    await recordSignal({ key: rule.strategy + ":" + m.slug, strategy: rule.strategy, label: m.title, condition: m.condition,
-      targetAt: rule.target, observedAt: now, expiresAt: end, reason: "missing_collector_window", evidence: { timingErrorMs: now - rule.target } });
+  const sql = database();
+  const window = Math.floor(now / minute) * minute;
+  for (const interval of [5, 15]) {
+    const duration = interval * minute;
+    const end = Math.ceil(window / duration) * duration;
+    for (const close of [end - duration, end, end + duration]) {
+      const rule = btcRule(interval, close);
+      if (now <= rule.target + 5000 || now - rule.target > 3 * minute) continue;
+      const slug = `btc-updown-${interval}m-${(close - duration) / 1000}`;
+      const [m] = await sql`select condition,title from lab.markets where slug=${slug}`;
+      await recordSignal({ key: rule.strategy + ":" + slug, strategy: rule.strategy, label: m?.title ?? slug, condition: m?.condition,
+        targetAt: rule.target, observedAt: now, expiresAt: close, reason: m ? "missing_collector_window" : "missing_catalog_window",
+        evidence: { timingErrorMs: now - rule.target } });
+    }
   }
 }
 
@@ -182,6 +188,7 @@ export async function runWorker(slot: number, daily = false) {
     const now = Date.now();
     const jobs = [
       protect("btc_catalog", async () => {
+        let failures = 0;
         for (const interval of [5, 15]) {
           const duration = interval * minute;
           const start = Math.floor(now / duration) * duration;
@@ -189,9 +196,10 @@ export async function runWorker(slot: number, daily = false) {
             const m = await marketBySlug(`btc-updown-${interval}m-${t / 1000}`);
             if (m) await upsertMarket(m);
           }));
-          for (const result of results) if (result.status === "rejected") await log("btc_catalog", result.reason);
+          for (const result of results) if (result.status === "rejected") { failures++; await log("btc_catalog", result.reason); }
         }
         await marketCoverage(Date.now());
+        if (failures) throw Error(`Upstream failed for ${failures} BTC catalogue lookups`);
       }),
       protect("copy", async () => {
         const wallets = await sql`select distinct wallet from lab.experiments where strategy='copy' and ends_at>now() and wallet is not null limit 8`;
@@ -200,8 +208,19 @@ export async function runWorker(slot: number, daily = false) {
       protect("portfolio", settleAndMark),
       protect("wallet_history", backfillHistory),
     ];
-    if (Math.floor(slot / minute) % 5 === 0) jobs.push(protect("combo", scanCombos));
+    if (Math.floor(slot / minute) % 5 === 0) jobs.push(protect("combo", async () => {
+      const [status] = await sql`select exists(select 1 from lab.wallets where source='combos') as ready`;
+      if (!status.ready) await discoverWallets();
+      await scanCombos();
+    }));
     const health = await Promise.all(jobs);
+    if (health.some(section => !section)) {
+      const hour = date(Math.floor(slot / 3_600_000) * 3_600_000);
+      await sql`insert into lab.outbox(key,chat_id,payload)
+        select 'health:'||id||':'||${hour},chat_id,jsonb_build_object('text',
+          'PolyTrader Lab · Ошибка мониторинга. Состояние источников доступно в настройках Mini App.')
+        from lab.users where alerts and chat_id is not null on conflict do nothing`;
+    }
     await distributeSignals();
     await sql`update lab.decisions d set status='unfilled',reason='expired',updated_at=now()
       from lab.signals s,lab.experiments e where d.signal=s.id and d.experiment=e.id and d.status in ('queued','pending')

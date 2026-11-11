@@ -15,7 +15,8 @@
     "collector": "node --env-file-if-exists=.env.local scripts/collector.ts",
     "bundle:neon": "node scripts/bundle-neon.mjs",
     "telegram:configure": "node --env-file-if-exists=.env.local scripts/configure-telegram.mjs",
-    "db:migrate": "node --env-file-if-exists=.env.local scripts/migrate.mjs"
+    "db:migrate": "node --env-file-if-exists=.env.local scripts/migrate.mjs",
+    "db:verify": "node --env-file-if-exists=.env.local scripts/verify-db.mjs"
   },
   "dependencies": {
     "next": "16.4.3",

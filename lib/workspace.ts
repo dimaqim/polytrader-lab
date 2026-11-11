@@ -10,14 +10,14 @@ export type Trade = {
   id: string; strategy: Strategy; mode: string; label: string; status: string; reason: string | null;
   observed_at: string; target_at: string; shares: number | null; price: number | null; cost: number | null; fee: number | null;
   pnl: number | null; settled_at: string | null; execution?: { delayMs: number | null };
-  evidence?: { timingErrorMs?: number; detectionDelayMs?: number };
+  evidence?: { timingErrorMs?: number; detectionDelayMs?: number; modeledShares?: number; modeledSpread?: number };
 };
 export type WorkspaceData = {
   runs: Run[]; trades: Trade[]; equity: { experiment: string; at: string; value: number | null }[];
   markets: { condition: string; slug: string; title: string; ends_at: string; interval_minutes: number;
     outcomes: string[]; prices: (number | null)[]; seen_at: string; fee: { rate: number } | null }[];
   wallets: { address: string; name: string; source: string; public_pnl: number | null; volume_shares: number | null;
-    history_complete: boolean; records: number }[];
+    history_complete: boolean; records: number; buys: number; sells: number; redeems: number; first_at: string | null; last_at: string | null }[];
   combos: { id: string; name: string | null; wallet: string; stake: number; event_at: string; detected_at: string; author_pnl: number | null;
     payload: { status: string; legs: { leg_outcome_label: string; market: { title: string } }[] } }[];
   health: { source: string; at: string; details: { sections?: boolean[]; connected?: boolean } }[];

@@ -2,8 +2,8 @@
 
 import { useEffect, useState, useRef, useCallback, type FormEvent, type ReactNode } from "react";
 import {
-  Activity, ArrowDownRight, ArrowRight, ArrowUpRight, BarChart3, Bitcoin, BookOpen, ChartNoAxesCombined, ChevronDown,
-  CircleHelp, Clock3, FlaskConical, History, LayoutDashboard, Layers3, ListFilter, Menu, Moon, Plus, Radio, RefreshCw,
+  Activity, ArrowRight, ArrowUpRight, BarChart3, Bitcoin, ChartNoAxesCombined,
+  Clock3, FlaskConical, History, LayoutDashboard, Layers3, Menu, Moon, Plus, Radio, RefreshCw,
   ScanLine, Send, Settings, ShieldCheck, Sun, Target, Users, Wallet, X, Zap,
 } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -41,8 +41,9 @@ const reasons: Record<string, string> = {
   insufficient_liquidity_or_slippage: "Мало ликвидности или превышено проскальзывание", source_sell_outside_v1: "Продажа вне правил v1",
   combo_rfq_depth_unavailable: "Нет публичной котировки RFQ", missing_market_parameters: "Нет параметров рынка",
   expired_or_closed: "Срок истёк или рынок закрыт", market_closed: "Рынок закрыт", risk_or_pause: "Пауза или лимит риска",
-  exposure_or_cash: "Лимит позиции или недостаточно средств", drawdown: "Лимит просадки", user_skipped: "Пропущено пользователем",
+  exposure_or_cash: "Лимит позиции или недостаточно средств", drawdown: "Лимит просадки", unverified_open_equity: "Капитал открытых позиций не оценён", user_skipped: "Пропущено пользователем",
   below_threshold: "Цена ниже порога или нет фаворита", quote_api_error: "API котировок недоступен", missing_market: "Рынок недоступен",
+  maker_research_estimate: "Парный спред · исследовательская оценка", missing_catalog_window: "Раунд не получен из каталога",
   maker_no_trade_through: "Нет подтверждённого прохода цены", maker_continuity_gap: "Разрыв в потоке стакана",
 };
 const statuses: Record<string, string> = {
@@ -101,7 +102,7 @@ function MarketHealth({ data, unavailable }: { data: WorkspaceData | null; unava
 function Trades({ rows }: { rows: Trade[] }) {
   if (!rows.length) return <Empty icon={History} title="Журнал пока пуст" text="Здесь появятся сигналы, исполнения и причины пропусков." />;
   return <div className="table-wrap"><table><thead><tr><th>Сигнал / рынок</th><th>Режим</th><th>Статус</th><th>Цена</th><th>PnL</th><th>Время · Киев</th></tr></thead>
-    <tbody>{rows.map(row => <tr key={row.id}><td><strong>{row.label}</strong><small>{strategies[row.strategy].name}{row.reason ? " · " + (reasons[row.reason] ?? row.reason) : ""}</small></td>
+    <tbody>{rows.map(row => <tr key={row.id}><td><strong>{row.label}</strong><small>{strategies[row.strategy].name}{row.reason ? " · " + (reasons[row.reason] ?? row.reason) : ""}</small>{row.evidence?.modeledShares ? <small>Парный объём {row.evidence.modeledShares.toFixed(2)} · оценка спреда {dollars(row.evidence.modeledSpread)}</small> : null}</td>
       <td>{shortMode(row.mode)}</td><td><span className={"tag " + (row.status === "filled" || row.status === "partial" ? "good" : row.status === "pending" ? "amber" : "muted")}>{statuses[row.status] ?? row.status}</span></td>
       <td className="number">{price(row.price)}</td><td className={"number " + (row.pnl != null && row.pnl >= 0 ? "positive" : row.pnl != null ? "negative" : "")}>{dollars(row.pnl)}</td>
       <td className="number nowrap">{when(row.observed_at)}</td></tr>)}</tbody></table></div>;
@@ -153,10 +154,12 @@ function StartForm({ strategy, wallets, onSubmit, busy }: { strategy: Strategy; 
   const [selected, setSelected] = useState(strategy);
   const [days, setDays] = useState("7");
   const [custom, setCustom] = useState(false);
+  const requestId = useRef<string | null>(null);
   function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
-    onSubmit({ strategy: selected, mode: f.get("mode"), wallet: f.get("wallet"), bank: Number(f.get("bank")),
+    requestId.current ??= crypto.randomUUID();
+    onSubmit({ requestId: requestId.current, strategy: selected, mode: f.get("mode"), wallet: f.get("wallet"), bank: Number(f.get("bank")),
       stake: Number(f.get("stake")), days: Number(days), drawdown: Number(f.get("drawdown")), exposure: Number(f.get("exposure")), slippage: Number(f.get("slippage")) });
   }
   return <form className="run-form" onSubmit={submit}>
@@ -196,6 +199,7 @@ export function Workspace() {
   const [walletSearch, setWalletSearch] = useState("");
   const [comboSort, setComboSort] = useState("time");
   const initial = useRef(false);
+  const startAfterAuth = useRef(false);
   const refresh = useCallback(async () => {
     try { setData(await api<WorkspaceData>("workspace")); setOffline(false); }
     catch { setOffline(true); }
@@ -226,7 +230,10 @@ export function Workspace() {
     const timer = window.setInterval(async () => {
       try {
         const result = await api<{ ok?: boolean }>("auth/claim", { code: pair.code, secret: pair.secret });
-        if (result.ok) { setPair(null); setDialog(null); setMessage("Вход выполнен"); await refresh(); }
+        if (result.ok) {
+          setPair(null); setDialog(startAfterAuth.current ? "start" : null); startAfterAuth.current = false;
+          await refresh();
+        }
       } catch (e) { setMessage((e as Error).message); }
     }, 2500);
     return () => clearInterval(timer);
@@ -238,7 +245,7 @@ export function Workspace() {
     localStorage.setItem("polytrader-theme", next);
     setTheme(next);
   }
-  function openStart(strategy: Strategy = "btc15") { setSelected(strategy); setMessage(""); setDialog(data?.user ? "start" : "auth"); }
+  function openStart(strategy: Strategy = "btc15") { setSelected(strategy); setMessage(""); startAfterAuth.current = !data?.user; setDialog(data?.user ? "start" : "auth"); }
   async function mutate(action: () => Promise<unknown>, success?: string) {
     setBusy(true); setMessage("");
     try { await action(); if (success) setMessage(success); await refresh(); }
@@ -281,7 +288,7 @@ export function Workspace() {
         <div className="toolbar"><span className="network"><i className={offline ? "offline" : data ? "online" : ""} />{offline ? "Нет связи" : data ? "Данные Polymarket" : "Подключение"}</span>
           <Button variant="ghost" size="icon" aria-label="Сменить тему" onClick={toggleTheme}>{theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}</Button>
           {data?.user ? <button className="avatar" aria-label="Настройки аккаунта" onClick={() => navigate("settings")}>{data.user.name.slice(0, 2).toUpperCase()}</button>
-            : <Button size="small" variant="outline" onClick={() => { setMessage(""); setDialog("auth"); }}><Send size={14} /> Войти</Button>}
+            : <Button size="small" variant="outline" onClick={() => { setMessage(""); startAfterAuth.current = false; setDialog("auth"); }}><Send size={14} /> Войти</Button>}
         </div>
       </header>
       <main id="main" className="content">
@@ -323,7 +330,7 @@ export function Workspace() {
           <input aria-label="Поиск кошелька" placeholder="Имя или 0x…" value={walletSearch} onChange={e => setWalletSearch(e.target.value)} /></div>
           {data?.wallets.some(w => (w.name + w.address).toLowerCase().includes(walletSearch.toLowerCase())) ? <div className="table-wrap"><table><thead><tr><th>Кошелёк</th><th>Источник</th><th>Публичный PnL</th><th>История</th></tr></thead><tbody>
             {data.wallets.filter(w => (w.name + w.address).toLowerCase().includes(walletSearch.toLowerCase())).map(w => <tr key={w.address}><td><a href={`https://polymarket.com/profile/${w.address}`} target="_blank" rel="noreferrer"><strong>{w.name}</strong> <ArrowUpRight size={13} /></a><small className="number">{compactWallet(w.address)}</small></td>
-              <td><span className="tag muted">{w.source === "research" ? "Исследование" : w.source}</span></td><td className="number">{dollars(w.public_pnl)}</td><td>{count(w.records)} записей<small>{w.history_complete ? "Архив выгружен" : "Архив неполный"}</small></td></tr>)}
+              <td><span className="tag muted">{w.source === "research" ? "Исследование" : w.source}</span></td><td className="number">{dollars(w.public_pnl)}</td><td>{count(w.records)} записей<small>{w.history_complete ? "Архив выгружен" : "Архив неполный"}</small><small>Покупки {count(w.buys)} · продажи {count(w.sells)} · погашения {count(w.redeems)}</small></td></tr>)}
           </tbody></table></div> : <Empty icon={Users} title="Кошельки не найдены" text="Измените поиск или дождитесь обновления рейтинга." />}</Panel>}
         {page === "combos" && <Panel><div className="panel-head"><div><h2>Крупные комбо</h2><p>Стоимость входа в позицию · повторы проверяются после обнаружения</p></div>
           <select aria-label="Сортировка комбо" value={comboSort} onChange={e => setComboSort(e.target.value)}><option value="time">По обнаружению</option><option value="stake">По размеру</option><option value="author">По PnL автора</option></select></div>

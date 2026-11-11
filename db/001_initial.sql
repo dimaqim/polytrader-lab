@@ -98,7 +98,9 @@ begin
     debit := (fill->>'cost')::numeric;
     select coalesce(sum(cost),0) into used from lab.positions where experiment=e.id and settled_at is null;
     if debit>e.cash or debit>e.stake or used+debit>e.bank*e.exposure then why := 'exposure_or_cash';
-    elsif e.marked_at is not null and e.worst_drawdown>=e.drawdown then why := 'drawdown';
+    elsif e.worst_drawdown>=e.drawdown then why := 'drawdown';
+    elsif used>0 and not coalesce((select coverage and at>now()-interval '3 minutes' from lab.equity where experiment=e.id order by at desc limit 1),false)
+      then why := 'unverified_open_equity';
     else
       insert into lab.positions(decision,experiment,condition,token,shares,cost,fee,price,slippage,opened_at)
       values(d.id,e.id,s.condition,s.token,(fill->>'shares')::numeric,debit,(fill->>'fee')::numeric,

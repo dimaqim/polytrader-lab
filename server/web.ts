@@ -3,6 +3,7 @@ import { wilson } from "../lib/metrics.ts";
 import { createPairing, pairingHash, sessionCookie, sessionUser, telegramIdentity } from "./auth.ts";
 import { database, log } from "./db.ts";
 
+const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const noStore = { "cache-control": "no-store" };
 const json = (data: unknown, status = 200, cookie?: string) => Response.json(data, {
   status, headers: { ...noStore, ...(cookie ? { "set-cookie": cookie } : {}) },
@@ -16,8 +17,12 @@ async function dataFor(user: string | null) {
     sql`select condition,slug,title,ends_at,interval_minutes,outcomes,prices,seen_at,fee from lab.markets
       where open and ends_at>now() and seen_at>now()-interval '5 minutes' order by ends_at limit 32`,
     sql`select w.address,w.name,w.source,w.public_pnl::float8,w.volume_shares::float8,w.history_complete,
-      (select count(*)::int from lab.wallet_activity a where a.wallet=w.address) as records
-      from lab.wallets w order by case when address=${seedWallet} then 0 when source='research' then 1 else 2 end,public_pnl desc nulls last limit 48`,
+      h.records,h.buys,h.sells,h.redeems,h.first_at,h.last_at
+      from lab.wallets w left join lateral (select count(*)::int records,
+        count(*) filter(where payload->>'type'='TRADE' and payload->>'side'='BUY')::int buys,
+        count(*) filter(where payload->>'type'='TRADE' and payload->>'side'='SELL')::int sells,
+        count(*) filter(where payload->>'type'='REDEEM')::int redeems,min(event_at) first_at,max(event_at) last_at
+        from lab.wallet_activity where wallet=w.address) h on true order by case when address=${seedWallet} then 0 when source='research' then 1 else 2 end,public_pnl desc nulls last limit 48`,
     sql`select c.id,c.wallet,c.stake::float8,c.event_at,c.detected_at,c.payload,w.name,
       coalesce(w.public_pnl::float8,null) as author_pnl from lab.combos c left join lab.wallets w on w.address=c.wallet
       order by detected_at desc limit 60`,
@@ -27,8 +32,8 @@ async function dataFor(user: string | null) {
       coalesce(s.wins,0) as wins,coalesce(s.pnl,0) as pnl,coalesce(s.fees,0) as fees,s.slippage,q.value::float8 as equity,
       (select count(*)::int from lab.decisions d where d.experiment=e.id and d.status in ('unfilled','skipped')) as missed,
       (select percentile_cont(0.95) within group(order by abs((s.evidence->>'timingErrorMs')::float8))
-        from lab.decisions d join lab.signals s on s.id=d.signal where d.experiment=e.id and s.reason is distinct from 'missing_collector_window') as timing_p95,
-      (select count(*)::int from lab.decisions d join lab.signals s on s.id=d.signal where d.experiment=e.id and s.reason='missing_collector_window') as timing_missing,
+        from lab.decisions d join lab.signals s on s.id=d.signal where d.experiment=e.id and coalesce(s.reason,'') not in ('missing_collector_window','missing_catalog_window')) as timing_p95,
+      (select count(*)::int from lab.decisions d join lab.signals s on s.id=d.signal where d.experiment=e.id and s.reason in ('missing_collector_window','missing_catalog_window')) as timing_missing,
       (select coalesce(sum(p.pnl),0)::float8 from lab.positions p where p.experiment=e.id and p.settled_at>now()-interval '7 days') as weekly_pnl,
       (select count(*)::int from lab.positions p where p.experiment=e.id and p.settled_at>now()-interval '7 days') as weekly_settled,
       (select count(*)::int from lab.positions p where p.experiment=e.id and p.settled_at>now()-interval '7 days' and p.pnl>0) as weekly_wins
@@ -59,8 +64,9 @@ async function dataFor(user: string | null) {
 }
 async function startRun(user: string, payload: Record<string, unknown>) {
   const strategy = payload.strategy as Strategy;
-  const { mode, bank, stake, days, drawdown, exposure, slippage } = payload;
+  const { mode, bank, stake, days, drawdown, exposure, slippage, requestId } = payload;
   if (!strategyIds.includes(strategy) || (mode !== "auto" && mode !== "confirm" && mode !== "both")
+    || typeof requestId !== "string" || !uuidPattern.test(requestId)
     || !allowedNumber(bank, 10, 1_000_000) || !allowedNumber(stake, 1, bank)
     || !allowedNumber(days, 1 / 24, 365) || !allowedNumber(drawdown, 1, 100)
     || !allowedNumber(exposure, 1, 100) || !allowedNumber(slippage, 0, 5000) || !Number.isInteger(slippage)
@@ -76,11 +82,14 @@ async function startRun(user: string, payload: Record<string, unknown>) {
   const rules = JSON.stringify({ ...strategies[strategy], bank, stake, days, drawdown, exposure, slippage, wallet,
     ...(strategy === "btc15" || strategy === "btc5" ? btcRule(strategy === "btc15" ? 15 : 5, 0) : {}) });
   const result = await sql`with inserted as (
-    insert into lab.experiments(user_id,strategy,version,mode,rules,bank,cash,stake,drawdown,exposure,slippage,wallet,starts_at,ends_at,peak)
+    insert into lab.experiments(user_id,strategy,version,mode,rules,bank,cash,stake,drawdown,exposure,slippage,wallet,starts_at,ends_at,peak,request_id)
     select ${user},${strategy},${version},m,${rules},${bank},${bank},${stake},${drawdown / 100},${exposure / 100},${slippage},${wallet},
-      now(),now()+${Math.round(days * 86400)}*interval '1 second',${bank} from unnest(${modes}::text[]) m returning *
+      now(),now()+${Math.round(days * 86400)}*interval '1 second',${bank} ,${requestId} from unnest(${modes}::text[]) m
+    on conflict(user_id,request_id,mode) where request_id is not null do nothing returning *
     ) insert into lab.equity(experiment,at,value,cash,coverage) select id,starts_at,bank,cash,true from inserted returning experiment`;
-  return json({ ids: result.map(r => r.experiment) }, 201);
+  if (result.length) return json({ ids: result.map(r => r.experiment) }, 201);
+  const prior = await sql`select id from lab.experiments where user_id=${user} and request_id=${requestId} order by mode`;
+  return json({ ids: prior.map(r => r.id) });
 }
 
 export async function web(req: Request, route: string[]) {
@@ -124,9 +133,9 @@ export async function web(req: Request, route: string[]) {
       return rows.length ? json({ ok: true }, 200, sessionCookie(rows[0].user_id)) : json({ pending: true }, 202);
     }
     if (!user) return json({ error: "login_required" }, 401);
-    if (action === "experiments") return startRun(user, input);
+    if (action === "experiments") return await startRun(user, input);
     if (action === "experiments/pause") {
-      if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(input.id) || typeof input.paused !== "boolean") {
+      if (typeof input.id !== "string" || !uuidPattern.test(input.id) || typeof input.paused !== "boolean") {
         return json({ error: "invalid_request" }, 400);
       }
       const result = await sql`update lab.experiments set paused=${input.paused}
