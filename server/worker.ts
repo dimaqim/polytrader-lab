@@ -24,6 +24,8 @@ async function archive(wallet: string, rows: Activity[]) {
 }
 async function backfillHistory() {
   const sql = database();
+  const [storage] = await sql`select pg_total_relation_size('lab.wallet_activity')::float8 as bytes`;
+  if (storage.bytes >= 750 * 1024 ** 2) throw new Error("Wallet archive reached the 750 MiB storage budget");
   const [wallet] = await sql`select address,history_cursor,history_end from lab.wallets where not history_complete
     order by case when source='research' then 0 else 1 end,updated_at limit 1`;
   if (!wallet) return;

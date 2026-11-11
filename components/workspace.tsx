@@ -48,7 +48,7 @@ const reasons: Record<string, string> = {
 };
 const statuses: Record<string, string> = {
   filled: "Исполнено", partial: "Частично", unfilled: "Не исполнено", pending: "Ожидает", processing: "Проверяется",
-  queued: "В очереди", skipped: "Пропущено", research: "Наблюдение",
+  queued: "В очереди", skipped: "Пропущено",
 };
 const dollars = (n: number | null | undefined) => n == null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(n);
 const percent = (n: number | null | undefined) => n == null ? "—" : `${(n * 100).toFixed(1)}%`;
@@ -99,14 +99,51 @@ function MarketHealth({ data, unavailable }: { data: WorkspaceData | null; unava
     <div><span className="health-icon"><ShieldCheck size={16} /></span><span><strong>Режим исполнения</strong><small>Независимые виртуальные банки</small></span><span className="tag violet">Paper</span></div>
   </div>;
 }
-function Trades({ rows }: { rows: Trade[] }) {
+function Trades({ rows, details = false }: { rows: Trade[]; details?: boolean }) {
   if (!rows.length) return <Empty icon={History} title="Журнал пока пуст" text="Здесь появятся сигналы, исполнения и причины пропусков." />;
-  return <div className="table-wrap"><table><thead><tr><th>Сигнал / рынок</th><th>Режим</th><th>Статус</th><th>Цена</th><th>PnL</th><th>Время · Киев</th></tr></thead>
+  return <div className="table-wrap"><table><thead><tr><th>Сигнал / рынок</th><th>Режим</th><th>Статус</th><th>Цена</th>{details && <><th>Объём</th><th>Комиссия</th><th>Задержка исполнения</th></>}<th>PnL</th><th>Время · Киев</th></tr></thead>
     <tbody>{rows.map(row => <tr key={row.id}><td><strong>{row.label}</strong><small>{strategies[row.strategy].name}{row.reason ? " · " + (reasons[row.reason] ?? row.reason) : ""}</small>{row.evidence?.modeledShares ? <small>Парный объём {row.evidence.modeledShares.toFixed(2)} · оценка спреда {dollars(row.evidence.modeledSpread)}</small> : null}</td>
       <td>{shortMode(row.mode)}</td><td><span className={"tag " + (row.status === "filled" || row.status === "partial" ? "good" : row.status === "pending" ? "amber" : "muted")}>{statuses[row.status] ?? row.status}</span></td>
-      <td className="number">{price(row.price)}</td><td className={"number " + (row.pnl != null && row.pnl >= 0 ? "positive" : row.pnl != null ? "negative" : "")}>{dollars(row.pnl)}</td>
+      <td className="number">{price(row.price)}</td>{details && <><td className="number">{row.shares == null ? "—" : row.shares.toFixed(2)}</td><td className="number">{dollars(row.fee)}</td><td className="number">{row.execution?.delayMs == null ? "—" : Math.round(row.execution.delayMs) + " мс"}</td></>}<td className={"number " + (row.pnl != null && row.pnl >= 0 ? "positive" : row.pnl != null ? "negative" : "")}>{dollars(row.pnl)}</td>
       <td className="number nowrap">{when(row.observed_at)}</td></tr>)}</tbody></table></div>;
 }
+function HistoryPanel({ enabled }: { enabled: boolean }) {
+  const [filter, setFilter] = useState("all");
+  const [rows, setRows] = useState<Trade[]>([]);
+  const [next, setNext] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const request = useRef(0);
+  const read = useCallback(async (cursor?: string) => {
+    const current = ++request.current;
+    setBusy(true);
+    setError("");
+    try {
+      const params = new URLSearchParams({ status: filter, ...(cursor ? { cursor } : {}) });
+      const result = await api<{ rows: Trade[]; next: string | null }>("history?" + params);
+      if (current !== request.current) return;
+      setRows(prior => cursor ? [...prior, ...result.rows] : result.rows);
+      setNext(result.next);
+    } catch (e) {
+      if (current === request.current) setError((e as Error).message);
+    } finally {
+      if (current === request.current) setBusy(false);
+    }
+  }, [filter]);
+  useEffect(() => {
+    setRows([]);
+    setNext(null);
+    if (enabled) void read();
+    return () => { request.current++; };
+  }, [read, enabled]);
+  return <Panel><div className="panel-head"><div><h2>Решения по сигналам</h2><p>Исполнения, пропуски, комиссии и задержки</p></div>
+    <select aria-label="Фильтр статуса" value={filter} onChange={e => setFilter(e.target.value)}><option value="all">Все статусы</option>{Object.entries(statuses).map(([value, title]) => <option key={value} value={value}>{title}</option>)}</select></div>
+    {error ? <p className="notice" role="status">{error} <button onClick={() => void read()}>Повторить</button></p> :
+      busy && rows.length === 0 ? <Empty icon={History} title="Загрузка журнала" text="Запрашиваю решения по сигналам." /> : <Trades rows={rows} details />}
+    {next && <button className="panel-link" disabled={busy} onClick={() => void read(next)}>{busy ? "Загрузка…" : "Показать более ранние"}</button>}
+  </Panel>;
+}
+
 function Equity({ data, start }: { data: WorkspaceData | null; start: () => void }) {
   const runs = data?.runs ?? [];
   const [chosen, setChosen] = useState("");
@@ -150,7 +187,7 @@ function RunTable({ runs, onPause, ranking }: { runs: Run[]; onPause?: (run: Run
     })}</tbody></table></div>;
 }
 
-function StartForm({ strategy, wallets, onSubmit, busy }: { strategy: Strategy; wallets: WorkspaceData["wallets"]; onSubmit: (body: object) => void; busy: boolean }) {
+function StartForm({ strategy, wallet, wallets, onSubmit, busy }: { strategy: Strategy; wallet: string; wallets: WorkspaceData["wallets"]; onSubmit: (body: object) => void; busy: boolean }) {
   const [selected, setSelected] = useState(strategy);
   const [days, setDays] = useState("7");
   const [custom, setCustom] = useState(false);
@@ -165,7 +202,7 @@ function StartForm({ strategy, wallets, onSubmit, busy }: { strategy: Strategy; 
   return <form className="run-form" onSubmit={submit}>
     <label>Стратегия<select value={selected} onChange={e => setSelected(e.target.value as Strategy)}>{strategyIds.map(id => <option value={id} key={id}>{strategies[id].name} · v{strategies[id].version}</option>)}</select></label>
     <p>{strategies[selected].description}. Параметры сохраняются на весь тест.</p>
-    {selected === "copy" && <label>Публичный кошелёк<input name="wallet" list="wallets" defaultValue={seedWallet} required pattern="0x[0-9a-fA-F]{40}" />
+    {selected === "copy" && <label>Публичный кошелёк<input name="wallet" list="wallets" defaultValue={wallet} required pattern="0x[0-9a-fA-F]{40}" />
       <datalist id="wallets">{wallets.map(w => <option value={w.address} key={w.address}>{w.name}</option>)}</datalist></label>}
     <label>Режим<select name="mode"><option value="auto">Автоматический</option><option value="confirm">Подтверждение в Telegram</option><option value="both">Оба режима · два независимых банка</option></select></label>
     <div className="fields"><label>Виртуальный банк, $<input name="bank" type="number" min="10" max="1000000" step=".01" defaultValue="1000" required /></label>
@@ -191,10 +228,10 @@ export function Workspace() {
   const [drawer, setDrawer] = useState(false);
   const [dialog, setDialog] = useState<"start" | "auth" | null>(null);
   const [selected, setSelected] = useState<Strategy>("btc15");
+  const [testWallet, setTestWallet] = useState(seedWallet);
   const [pair, setPair] = useState<Pair | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
-  const [historyFilter, setHistoryFilter] = useState("all");
   const [marketFilter, setMarketFilter] = useState("all");
   const [walletSearch, setWalletSearch] = useState("");
   const [comboSort, setComboSort] = useState("time");
@@ -245,7 +282,7 @@ export function Workspace() {
     localStorage.setItem("polytrader-theme", next);
     setTheme(next);
   }
-  function openStart(strategy: Strategy = "btc15") { setSelected(strategy); setMessage(""); startAfterAuth.current = !data?.user; setDialog(data?.user ? "start" : "auth"); }
+  function openStart(strategy: Strategy = "btc15", wallet = seedWallet) { setSelected(strategy); setTestWallet(wallet); setMessage(""); startAfterAuth.current = !data?.user; setDialog(data?.user ? "start" : "auth"); }
   async function mutate(action: () => Promise<unknown>, success?: string) {
     setBusy(true); setMessage("");
     try { await action(); if (success) setMessage(success); await refresh(); }
@@ -302,7 +339,7 @@ export function Workspace() {
               { label: "Виртуальный банк", value: runs.length ? dollars(capital) : "—", hint: "Сумма стартовых банков", icon: Wallet },
               { label: "Рассчитанный PnL", value: settled ? dollars(pnl) : "—", hint: settled ? `ROI ${percent(pnl / capital)}` : "По закрытым позициям", icon: ChartNoAxesCombined },
               { label: "Win rate", value: settled ? percent(wins / settled) : "—", hint: settled ? `${wins} из ${settled} сделок` : "Ожидание расчётов", icon: Target },
-              { label: "Активные тесты", value: data ? String(active).padStart(2, "0") : "—", hint: `Доступно ${strategyIds.length} стратегий`, icon: FlaskConical },
+              { label: "Активные тесты", value: data ? String(active) : "—", hint: `Доступно ${strategyIds.length} стратегий`, icon: FlaskConical },
             ].map(m => <Panel className="metric" key={m.label}><div><span>{m.label}</span><m.icon size={17} /></div><strong>{m.value}</strong><small>{m.hint}</small></Panel>)}
           </div>
           <div className="overview-grid"><Equity data={data} start={() => openStart()} />
@@ -326,12 +363,17 @@ export function Workspace() {
             {data.markets.filter(m => marketFilter === "all" || String(m.interval_minutes) === marketFilter).map(m => <tr key={m.condition}><td><a href={`https://polymarket.com/event/${encodeURIComponent(m.slug)}`} target="_blank" rel="noreferrer">{m.title} <ArrowUpRight size={13} /></a></td>
               <td>{m.outcomes.map((o, i) => <span key={o} className="tag violet">{o} {price(m.prices[i])}</span>)}</td><td className="number">{when(m.ends_at)}</td><td className="number">{clock(m.seen_at)}</td></tr>)}
           </tbody></table></div> : <Empty icon={Radio} title={loading ? "Загрузка рынков" : "Нет свежих рынков"} text="Данные появятся после успешного обновления каталога." />}</Panel>}
-        {page === "copy" && <Panel><div className="panel-head"><div><h2>Кандидаты для наблюдения</h2><p>Рейтинг Polymarket за неделю · история загружается постранично</p></div>
+        {page === "copy" && <><Panel><div className="panel-head"><div><h2>Кандидаты для наблюдения</h2><p>Рейтинг Polymarket за неделю · история загружается постранично</p></div>
           <input aria-label="Поиск кошелька" placeholder="Имя или 0x…" value={walletSearch} onChange={e => setWalletSearch(e.target.value)} /></div>
           {data?.wallets.some(w => (w.name + w.address).toLowerCase().includes(walletSearch.toLowerCase())) ? <div className="table-wrap"><table><thead><tr><th>Кошелёк</th><th>Источник</th><th>Публичный PnL</th><th>История</th></tr></thead><tbody>
             {data.wallets.filter(w => (w.name + w.address).toLowerCase().includes(walletSearch.toLowerCase())).map(w => <tr key={w.address}><td><a href={`https://polymarket.com/profile/${w.address}`} target="_blank" rel="noreferrer"><strong>{w.name}</strong> <ArrowUpRight size={13} /></a><small className="number">{compactWallet(w.address)}</small></td>
               <td><span className="tag muted">{w.source === "research" ? "Исследование" : w.source}</span></td><td className="number">{dollars(w.public_pnl)}</td><td>{count(w.records)} записей<small>{w.history_complete ? "Архив выгружен" : "Архив неполный"}</small><small>Покупки {count(w.buys)} · продажи {count(w.sells)} · погашения {count(w.redeems)}</small></td></tr>)}
-          </tbody></table></div> : <Empty icon={Users} title="Кошельки не найдены" text="Измените поиск или дождитесь обновления рейтинга." />}</Panel>}
+          </tbody></table></div> : <Empty icon={Users} title="Кошельки не найдены" text="Измените поиск или дождитесь обновления рейтинга." />}</Panel>
+          {data?.wallets.some(w => w.source === "crypto" && (w.public_pnl ?? 0) > 0 && w.buys >= 100) && <Panel>
+            <div className="panel-head"><div><h2>Гипотезы для проверки</h2><p>Кандидаты с положительным недельным PnL и минимум 100 покупками в архиве</p></div><FlaskConical size={19} className="accent" /></div>
+            <div className="setting-rows">{data.wallets.filter(w => w.source === "crypto" && (w.public_pnl ?? 0) > 0 && w.buys >= 100).slice(0,5).map(w => <div key={w.address}><span><strong>Проверить копирование {w.name}</strong><small>{count(w.buys)} покупок · {compactWallet(w.address)}</small></span>
+              <Button variant="outline" size="small" onClick={() => openStart("copy", w.address)}>Настроить тест <ArrowRight size={14} /></Button></div>)}</div>
+          </Panel>}</>}
         {page === "combos" && <Panel><div className="panel-head"><div><h2>Крупные комбо</h2><p>Стоимость входа в позицию · повторы проверяются после обнаружения</p></div>
           <select aria-label="Сортировка комбо" value={comboSort} onChange={e => setComboSort(e.target.value)}><option value="time">По обнаружению</option><option value="stake">По размеру</option><option value="author">По PnL автора</option></select></div>
           {data?.combos.length ? <div className="table-wrap"><table><thead><tr><th>Комбо</th><th>Автор</th><th>Стоимость</th><th>Обнаружено · Киев</th></tr></thead><tbody>
@@ -339,9 +381,7 @@ export function Workspace() {
           </tbody></table></div> : <Empty icon={Layers3} title="Комбо ещё не обнаружены" text="Мониторинг проверяет публичные позиции авторов из рейтинга комбо." />}</Panel>}
         {page === "portfolio" && <><Equity data={data} start={() => openStart()} /><Panel><div className="panel-head"><div><h2>Виртуальные банки</h2><p>Свободные средства и последняя оценка капитала</p></div></div>
           {runs.length ? <div className="table-wrap"><table><thead><tr><th>Тест</th><th>Свободно</th><th>Капитал</th><th>Завершение · Киев</th><th>Статус</th></tr></thead><tbody>{runs.map(r => <tr key={r.id}><td><strong>{strategies[r.strategy].name}</strong><small>{shortMode(r.mode)} · v{r.version}</small></td><td className="number">{dollars(r.cash)}</td><td className="number">{dollars(r.equity)}</td><td className="number">{when(r.ends_at)}</td><td><span className="tag muted">{status(r)}</span></td></tr>)}</tbody></table></div> : <Empty icon={Wallet} title="Портфель пуст" text="Запустите тест, чтобы создать виртуальный банк." />}</Panel></>}
-        {page === "history" && <Panel><div className="panel-head"><div><h2>Решения по сигналам</h2><p>До 250 последних записей</p></div>
-          <select aria-label="Фильтр статуса" value={historyFilter} onChange={e => setHistoryFilter(e.target.value)}><option value="all">Все статусы</option>{Object.entries(statuses).map(([value, title]) => <option key={value} value={value}>{title}</option>)}</select></div>
-          <Trades rows={trades.filter(t => historyFilter === "all" || t.status === historyFilter)} /></Panel>}
+        {page === "history" && <HistoryPanel enabled={!!data?.user} />}
         {page === "analytics" && <><Panel><div className="panel-head"><div><h2>Рейтинг за 7 дней</h2><p>По реализованному ROI · 95% интервал Уилсона для доли прибыльных сделок</p></div></div>
           <RunTable runs={runs.filter(r => r.weekly_settled).sort((a, b) => b.weekly_pnl / b.bank - a.weekly_pnl / a.bank || a.drawdown - b.drawdown || b.weekly_settled - a.weekly_settled)} ranking /></Panel>
           <Panel><div className="panel-head"><div><h2>Сравнение тестов</h2><p>За весь период тестирования</p></div></div><RunTable runs={runs} /></Panel>
@@ -364,7 +404,7 @@ export function Workspace() {
       {dialog === "auth" ? <div className="auth-content"><p>Подтвердите вход в боте, чтобы открыть свои тесты в браузере.</p>
         {pair ? <><a className="button button-primary" href={pair.url} target="_blank" rel="noreferrer"><Send size={17} /> Подтвердить в Telegram <ArrowUpRight size={16} /></a><p>Откройте чат, нажмите Start и вернитесь сюда. Код действует 10 минут.</p></>
           : <Button disabled={busy} onClick={() => void mutate(async () => setPair(await api<Pair>("auth/pair", {})))}><Send size={17} /> {busy ? "Подключение…" : "Продолжить в Telegram"}</Button>}
-      </div> : <StartForm strategy={selected} wallets={data?.wallets ?? []} busy={busy} onSubmit={body => void mutate(async () => {
+      </div> : <StartForm strategy={selected} wallet={testWallet} wallets={data?.wallets ?? []} busy={busy} onSubmit={body => void mutate(async () => {
         await api("experiments", body); setDialog(null); navigate("strategies");
       }, "Тест запущен")} />}
     </Modal>}

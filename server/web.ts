@@ -43,10 +43,12 @@ async function dataFor(user: string | null) {
         from lab.positions where experiment=e.id) s on true
       left join lateral (select value from lab.equity where experiment=e.id order by at desc limit 1) q on true
       where e.user_id=${user} order by e.starts_at desc limit 100`,
-    sql`select d.id,d.status,d.reason,d.updated_at,s.strategy,s.label,s.observed_at,s.target_at,s.evidence,
+    sql`select d.id,d.status,d.reason,d.updated_at,s.strategy,s.label,s.observed_at,s.target_at,
+      jsonb_build_object('timingErrorMs',s.evidence->'timingErrorMs','detectionDelayMs',s.evidence->'detectionDelayMs',
+        'modeledShares',s.evidence->'modeledShares','modeledSpread',s.evidence->'modeledSpread') as evidence,
       d.execution,p.shares::float8,p.price::float8,p.cost::float8,p.fee::float8,p.pnl::float8,p.settled_at,e.mode,e.version
       from lab.decisions d join lab.signals s on s.id=d.signal join lab.experiments e on e.id=d.experiment
-      left join lab.positions p on p.decision=d.id where e.user_id=${user} order by s.observed_at desc limit 250`,
+      left join lab.positions p on p.decision=d.id where e.user_id=${user} order by s.observed_at desc,d.id desc limit 5`,
     sql`select experiment,bucket as at,value::float8 from (
       select distinct on (q.experiment,date_trunc('hour',q.at))
         q.experiment,date_trunc('hour',q.at) bucket,q.value
@@ -92,6 +94,26 @@ async function startRun(user: string, payload: Record<string, unknown>) {
   return json({ ids: prior.map(r => r.id) });
 }
 
+async function historyFor(user: string, url: URL) {
+  const filter = url.searchParams.get("status") ?? "all";
+  const cursor = url.searchParams.get("cursor");
+  if (!["all","filled","partial","unfilled","pending","processing","queued","skipped"].includes(filter)) return json({ error: "invalid_request" }, 400);
+  const [time, id] = cursor?.split("|") ?? [];
+  if (cursor && (!time || !id || !Number.isFinite(Date.parse(time)) || !uuidPattern.test(id))) return json({ error: "invalid_request" }, 400);
+  const rows = await database()`select d.id,d.status,d.reason,d.updated_at,s.strategy,s.label,s.observed_at,s.target_at,
+      jsonb_build_object('timingErrorMs',s.evidence->'timingErrorMs','detectionDelayMs',s.evidence->'detectionDelayMs',
+        'modeledShares',s.evidence->'modeledShares','modeledSpread',s.evidence->'modeledSpread') as evidence,
+    d.execution,p.shares::float8,p.price::float8,p.cost::float8,p.fee::float8,p.pnl::float8,p.settled_at,e.mode,e.version
+    from lab.decisions d join lab.signals s on s.id=d.signal join lab.experiments e on e.id=d.experiment
+    left join lab.positions p on p.decision=d.id where e.user_id=${user} and (${filter}='all' or d.status=${filter})
+    and (${time ?? null}::timestamptz is null or (s.observed_at,d.id)<(${time ?? null}::timestamptz,${id ?? null}::uuid))
+    order by s.observed_at desc,d.id desc limit 51`;
+  const visible = rows.slice(0,50);
+  const last = visible.at(-1);
+  const next = rows.length > 50 && last ? new Date(last.observed_at).toISOString() + "|" + last.id : null;
+  return json({ rows: visible, next });
+}
+
 export async function web(req: Request, route: string[]) {
   const action = route.join("/");
   try {
@@ -105,6 +127,7 @@ export async function web(req: Request, route: string[]) {
       if (!process.env.DATABASE_URL) return json({ error: "database_unconfigured" }, 503);
       return json(await dataFor(user));
     }
+    if (req.method === "GET" && action === "history") return user ? await historyFor(user, new URL(req.url)) : json({ error: "login_required" }, 401);
     if (req.method !== "POST") return json({ error: "not_found" }, 404);
     if (req.headers.get("origin") !== new URL(req.url).origin && req.headers.get("origin") !== process.env.APP_URL) {
       return json({ error: "origin_rejected" }, 403);
