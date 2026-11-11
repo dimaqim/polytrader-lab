@@ -1,0 +1,41 @@
+{
+  "name": "polytrader-lab",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test tests/*.test.ts",
+    "collector": "node --env-file-if-exists=.env.local scripts/collector.ts",
+    "bundle:neon": "node scripts/bundle-neon.mjs",
+    "telegram:configure": "node --env-file-if-exists=.env.local scripts/configure-telegram.mjs",
+    "db:migrate": "node --env-file-if-exists=.env.local scripts/migrate.mjs"
+  },
+  "dependencies": {
+    "next": "16.4.3",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "@neondatabase/serverless": "1.2.0",
+    "lucide-react": "0.577.0",
+    "recharts": "3.10.0",
+    "geist": "1.7.2",
+    "clsx": "2.1.1",
+    "tailwind-merge": "3.7.0",
+    "class-variance-authority": "0.7.1"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "tailwindcss": "4.3.1",
+    "@tailwindcss/postcss": "4.3.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@types/node": "24.19.2",
+    "esbuild": "0.28.1"
+  }
+}
