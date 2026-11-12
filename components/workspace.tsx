@@ -2,30 +2,28 @@
 
 import { useEffect, useState, useRef, useCallback, type FormEvent, type ReactNode } from "react";
 import {
-  Activity, ArrowRight, ArrowUpRight, BarChart3, Bitcoin, ChartNoAxesCombined,
-  Clock3, FlaskConical, History, LayoutDashboard, Layers3, Menu, Moon, Plus, Radio, RefreshCw,
-  ScanLine, Send, Settings, ShieldCheck, Sun, Target, Users, Wallet, X, Zap,
+  Activity, ArrowRight, ArrowUpRight, BarChart3, FlaskConical, History, LayoutDashboard,
+  Layers3, Menu, Moon, Plus, Radio, RefreshCw, Send, Settings, Sun, Users, Wallet, X,
 } from "lucide-react";
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Line, LineChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Button } from "./ui/button";
 import { seedWallet, strategies, strategyIds, type Strategy } from "../lib/strategies";
 import type { Run, Trade, WorkspaceData } from "../lib/workspace";
 
 const navigation = [
-  { id: "dashboard", title: "Обзор", english: "Dashboard", icon: LayoutDashboard },
-  { id: "strategies", title: "Стратегии", english: "Strategies", icon: FlaskConical },
-  { id: "markets", title: "Рынки", english: "Markets", icon: Radio },
-  { id: "copy", title: "Кошельки", english: "Copy Traders", icon: Users },
-  { id: "combos", title: "Комбо", english: "Combo Tracker", icon: Layers3 },
-  { id: "portfolio", title: "Портфель", english: "Paper Portfolio", icon: Wallet },
-  { id: "history", title: "Журнал", english: "Trade History", icon: History },
-  { id: "analytics", title: "Аналитика", english: "Analytics", icon: BarChart3 },
-  { id: "settings", title: "Настройки", english: "Settings", icon: Settings },
+  { id: "dashboard", title: "Обзор", icon: LayoutDashboard },
+  { id: "strategies", title: "Стратегии", icon: FlaskConical },
+  { id: "markets", title: "Рынки", icon: Radio },
+  { id: "copy", title: "Кошельки", icon: Users },
+  { id: "combos", title: "Комбо", icon: Layers3 },
+  { id: "portfolio", title: "Портфель", icon: Wallet },
+  { id: "history", title: "Журнал", icon: History },
+  { id: "analytics", title: "Аналитика", icon: BarChart3 },
+  { id: "settings", title: "Настройки", icon: Settings },
 ] as const;
 type Page = typeof navigation[number]["id"];
 type TelegramApp = { initData: string; ready: () => void; expand: () => void; colorScheme?: string };
 type Pair = { code: string; secret: string; url: string };
-const icons = { btc15: Bitcoin, btc5: Zap, copy: Users, combo: Layers3, maker: ScanLine };
 const errors: Record<string, string> = {
   invalid_parameters: "Проверьте банк, размер ставки и лимиты.",
   invalid_wallet: "Введите публичный адрес в формате 0x…",
@@ -70,14 +68,24 @@ async function api<T>(path: string, payload?: object): Promise<T> {
   return result as T;
 }
 function Brand() {
-  return <div className="brand"><span className="brand-icon"><ChartNoAxesCombined size={23} strokeWidth={2.5} /></span>
-    <span>PolyTrader <em>Lab</em><small>POLYMARKET RESEARCH</small></span></div>;
+  return <span className="brand"><span className="brand-mark" aria-hidden="true">PT</span>PolyTrader Lab</span>;
 }
 function Panel({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <section className={"panel " + className}>{children}</section>;
+  return <section className={`panel ${className}`}>{children}</section>;
 }
-function Empty({ icon: Icon = Activity, title, text, action }: { icon?: typeof Activity; title: string; text: string; action?: ReactNode }) {
-  return <div className="empty"><span className="empty-icon"><Icon size={23} strokeWidth={1.6} /></span><strong>{title}</strong><p>{text}</p>{action}</div>;
+function Empty({ title, text, action }: { title: string; text: string; action?: ReactNode }) {
+  return <div className="empty"><strong>{title}</strong><p>{text}</p>{action}</div>;
+}
+function RouteLinks({ page, navigate }: { page: Page; navigate: (page: Page) => void }) {
+  return <nav aria-label="Разделы">
+    {[{ label: "Торговля", items: navigation.slice(0, 3) }, { label: "Исследование", items: navigation.slice(3) }].map(group =>
+      <div className="nav-group" key={group.label}><span>{group.label}</span>{group.items.map(n => (
+        <a key={n.id} href={"#" + n.id} onClick={e => { e.preventDefault(); navigate(n.id); }} aria-current={page === n.id ? "page" : undefined}>
+          <n.icon size={17} aria-hidden="true" />{n.title}
+        </a>
+      ))}</div>
+    )}
+  </nav>;
 }
 function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -85,27 +93,58 @@ function Modal({ title, children, onClose }: { title: string; children: ReactNod
   return <dialog ref={dialog} className="modal" aria-labelledby="modal-title" onCancel={e => { e.preventDefault(); onClose(); }}
     onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
     <div className="modal-body"><div className="modal-heading"><h2 id="modal-title">{title}</h2>
-      <Button size="icon" variant="ghost" aria-label="Закрыть" onClick={onClose}><X size={19} /></Button></div>{children}</div>
+      <Button size="icon" variant="ghost" aria-label="Закрыть" onClick={onClose}><X size={19} aria-hidden="true" /></Button></div>{children}</div>
   </dialog>;
+}
+function collectorOnline(data: WorkspaceData | null) {
+  const collector = data?.health.find(h => h.source === "collector");
+  return !!collector?.details.connected && Date.now() - +new Date(collector.at) < 30_000;
 }
 function MarketHealth({ data, unavailable }: { data: WorkspaceData | null; unavailable: boolean }) {
   const heartbeat = data?.health.find(h => h.source === "neon");
-  const monitor = heartbeat && Date.now() - +new Date(heartbeat.at) < 180_000;
-  const collector = data?.health.find(h => h.source === "collector");
-  const collectorLive = collector?.details.connected && Date.now() - +new Date(collector.at) < 30_000;
-  return <div className="health-list">
-    <div><span className="health-icon"><Radio size={16} /></span><span><strong>Мониторинг Neon</strong><small>{heartbeat ? "Последний запуск " + clock(heartbeat.at) : "Ожидание первого запуска"}</small></span><span className={"tag " + (monitor && heartbeat.details.sections?.every(Boolean) ? "good" : "muted")}>{unavailable ? "Нет связи" : monitor ? heartbeat.details.sections?.every(Boolean) ? "Активен" : "Есть ошибки" : "Ожидание"}</span></div>
-    <div><span className="health-icon"><Zap size={16} /></span><span><strong>BTC WebSocket</strong><small>{collectorLive ? "Получение L2-стакана" : "Окна T−30 / T−60 не подтверждены"}</small></span><span className={"tag " + (collectorLive ? "good" : "amber")}>{collectorLive ? "Подключён" : "Нужен сборщик"}</span></div>
-    <div><span className="health-icon"><ShieldCheck size={16} /></span><span><strong>Режим исполнения</strong><small>Независимые виртуальные банки</small></span><span className="tag violet">Paper</span></div>
-  </div>;
+  const monitor = !!heartbeat && Date.now() - +new Date(heartbeat.at) < 180_000;
+  const healthy = monitor && heartbeat.details.sections?.every(Boolean);
+  const collectorLive = collectorOnline(data);
+  return <dl className="health-list">
+    <div><dt>Мониторинг рынков</dt><dd>
+      <span className={healthy && !unavailable ? "positive" : ""}>
+        {unavailable ? "Нет связи" : healthy ? "Работает" : monitor ? "Есть ошибки" : "Нет свежего запуска"}
+      </span>
+      {heartbeat && <small>Обновление в {clock(heartbeat.at)}</small>}
+    </dd></div>
+    <div><dt>Стакан BTC в реальном времени</dt><dd>
+      <span className={collectorLive ? "positive" : "warning"}>{collectorLive ? "Подключён" : "Сборщик выключен"}</span>
+      <small>{collectorLive ? "Снимки доступны для сигналов BTC" : "Окна T−30 и T−60 могут быть пропущены"}</small>
+    </dd></div>
+  </dl>;
+}
+function MarketTable({ markets, loading, filtered = false }: {
+  markets: WorkspaceData["markets"]; loading: boolean; filtered?: boolean;
+}) {
+  if (!markets.length) return <Empty title={loading ? "Загружаю рынки…" : filtered ? "Раунды не найдены" : "Нет свежих котировок"}
+    text={filtered ? "Выберите другую длительность раунда." : "Котировки появятся после обновления каталога."} />;
+  return <div className="table-wrap"><table role="table" className="market-table">
+    <thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Рынок</th><th scope="col" role="columnheader">Котировки</th>
+      <th scope="col" role="columnheader">Закрытие</th><th scope="col" role="columnheader">Обновлено</th></tr></thead>
+    <tbody role="rowgroup">{markets.map(m => <tr role="row" key={m.condition}>
+      <td role="cell"><a href={`https://polymarket.com/event/${encodeURIComponent(m.slug)}`} target="_blank" rel="noreferrer">
+        {m.interval_minutes == null ? m.title : `BTC за ${m.interval_minutes} мин`} <ArrowUpRight size={13} aria-hidden="true" /></a>
+        {m.interval_minutes != null && <small>Раунд с {clock(new Date(+new Date(m.ends_at) - m.interval_minutes * 60_000).toISOString())}</small>}</td>
+      <td role="cell" data-label="Котировки"><div className="quote-pair">{m.outcomes.map((o, i) => (
+        <span key={o}><span>{o === "Up" ? "Вверх" : o === "Down" ? "Вниз" : o}</span><strong className="number">{price(m.prices[i])}</strong></span>
+      ))}</div></td>
+      <td role="cell" data-label="Закрытие" className="number"><time dateTime={m.ends_at} title={when(m.ends_at)}>{m.interval_minutes == null ? when(m.ends_at) : clock(m.ends_at)}</time></td>
+      <td role="cell" data-label="Обновлено" className="number"><time dateTime={m.seen_at}>{clock(m.seen_at)}</time></td>
+    </tr>)}</tbody>
+  </table></div>;
 }
 function Trades({ rows, details = false }: { rows: Trade[]; details?: boolean }) {
-  if (!rows.length) return <Empty icon={History} title="Журнал пока пуст" text="Здесь появятся сигналы, исполнения и причины пропусков." />;
-  return <div className="table-wrap"><table><thead><tr><th>Сигнал / рынок</th><th>Режим</th><th>Статус</th><th>Цена</th>{details && <><th>Объём</th><th>Комиссия</th><th>Задержка исполнения</th></>}<th>PnL</th><th>Время · Киев</th></tr></thead>
-    <tbody>{rows.map(row => <tr key={row.id}><td><strong>{row.label}</strong><small>{strategies[row.strategy].name}{row.reason ? " · " + (reasons[row.reason] ?? row.reason) : ""}</small>{row.evidence?.modeledShares ? <small>Парный объём {row.evidence.modeledShares.toFixed(2)} · оценка спреда {dollars(row.evidence.modeledSpread)}</small> : null}</td>
-      <td>{shortMode(row.mode)}</td><td><span className={"tag " + (row.status === "filled" || row.status === "partial" ? "good" : row.status === "pending" ? "amber" : "muted")}>{statuses[row.status] ?? row.status}</span></td>
-      <td className="number">{price(row.price)}</td>{details && <><td className="number">{row.shares == null ? "—" : row.shares.toFixed(2)}</td><td className="number">{dollars(row.fee)}</td><td className="number">{row.execution?.delayMs == null ? "—" : Math.round(row.execution.delayMs) + " мс"}</td></>}<td className={"number " + (row.pnl != null && row.pnl >= 0 ? "positive" : row.pnl != null ? "negative" : "")}>{dollars(row.pnl)}</td>
-      <td className="number nowrap">{when(row.observed_at)}</td></tr>)}</tbody></table></div>;
+  if (!rows.length) return <Empty title="Сигналов пока нет" text="Журнал пополнится после первого решения по сигналу." />;
+  return <div className="table-wrap"><table role="table"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Сигнал / рынок</th><th scope="col" role="columnheader">Режим</th><th scope="col" role="columnheader">Статус</th><th scope="col" role="columnheader">Цена</th>{details && <><th scope="col" role="columnheader">Объём</th><th scope="col" role="columnheader">Комиссия</th><th scope="col" role="columnheader">Задержка исполнения</th></>}<th scope="col" role="columnheader">PnL</th><th scope="col" role="columnheader">Время · Киев</th></tr></thead>
+    <tbody role="rowgroup">{rows.map(row => <tr role="row" key={row.id}><td role="cell"><strong>{row.label}</strong><small>{strategies[row.strategy].name}{row.reason ? " · " + (reasons[row.reason] ?? row.reason) : ""}</small>{row.evidence?.modeledShares ? <small>Парный объём {row.evidence.modeledShares.toFixed(2)} · оценка спреда {dollars(row.evidence.modeledSpread)}</small> : null}</td>
+      <td role="cell" data-label="Режим">{shortMode(row.mode)}</td><td role="cell" data-label="Статус"><span className={"tag " + (row.status === "filled" || row.status === "partial" ? "good" : row.status === "pending" ? "amber" : "muted")}>{statuses[row.status] ?? row.status}</span></td>
+      <td role="cell" data-label="Цена" className="number">{price(row.price)}</td>{details && <><td role="cell" data-label="Объём" className="number">{row.shares == null ? "—" : row.shares.toFixed(2)}</td><td role="cell" data-label="Комиссия" className="number">{dollars(row.fee)}</td><td role="cell" data-label="Задержка" className="number">{row.execution?.delayMs == null ? "—" : Math.round(row.execution.delayMs) + " мс"}</td></>}<td role="cell" data-label="PnL" className={"number " + (row.pnl != null && row.pnl >= 0 ? "positive" : row.pnl != null ? "negative" : "")}>{dollars(row.pnl)}</td>
+      <td role="cell" data-label="Время · Киев" className="number nowrap">{when(row.observed_at)}</td></tr>)}</tbody></table></div>;
 }
 function HistoryPanel({ enabled }: { enabled: boolean }) {
   const [filter, setFilter] = useState("all");
@@ -139,7 +178,7 @@ function HistoryPanel({ enabled }: { enabled: boolean }) {
   return <Panel><div className="panel-head"><div><h2>Решения по сигналам</h2><p>Исполнения, пропуски, комиссии и задержки</p></div>
     <select aria-label="Фильтр статуса" value={filter} onChange={e => setFilter(e.target.value)}><option value="all">Все статусы</option>{Object.entries(statuses).map(([value, title]) => <option key={value} value={value}>{title}</option>)}</select></div>
     {error ? <p className="notice" role="status">{error} <button onClick={() => void read()}>Повторить</button></p> :
-      busy && rows.length === 0 ? <Empty icon={History} title="Загрузка журнала" text="Запрашиваю решения по сигналам." /> : <Trades rows={rows} details />}
+      busy && rows.length === 0 ? <Empty title="Загрузка журнала" text="Запрашиваю решения по сигналам." /> : <Trades rows={rows} details />}
     {next && <button className="panel-link" disabled={busy} onClick={() => void read(next)}>{busy ? "Загрузка…" : "Показать более ранние"}</button>}
   </Panel>;
 }
@@ -153,36 +192,39 @@ function Equity({ data, start }: { data: WorkspaceData | null; start: () => void
     time: when(p.at), value: p.value,
   })) ?? [];
   return <Panel className="equity"><div className="panel-head"><div><h2>Кривая капитала</h2><p>Переоценка виртуального банка</p></div>
-    <div className="segments" aria-label="Период графика">{[7, 14, 21].map(n => <button key={n} className={range === n ? "selected" : ""} onClick={() => setRange(n)} aria-pressed={range === n}>{n} д</button>)}</div></div>
+    {selected && <div className="segments" role="group" aria-label="Период графика">{[7, 14, 21].map(n => <button key={n} className={range === n ? "selected" : ""} onClick={() => setRange(n)} aria-pressed={range === n}>{n} д</button>)}</div>}</div>
     {runs.length > 0 && <select className="chart-select" value={selected?.id} onChange={e => setChosen(e.target.value)} aria-label="Тест для графика">
       {runs.map(r => <option value={r.id} key={r.id}>{strategies[r.strategy].name} · {shortMode(r.mode)} · {when(r.starts_at)}</option>)}
     </select>}
-    <div className="chart-area">
-      {points.some(p => p.value != null) ? <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
-        <AreaChart data={points} margin={{ top: 20, left: 4, right: 14, bottom: 5 }}>
-          <defs><linearGradient id="equity-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#a799ff" stopOpacity={0.34} /><stop offset="100%" stopColor="#a799ff" stopOpacity={0.01} /></linearGradient></defs>
-          <CartesianGrid stroke="var(--line)" vertical={false} /><YAxis tickFormatter={n => "$" + n} domain={["auto", "auto"]} width={62} tickLine={false} axisLine={false} tick={{ fill: "var(--secondary)", fontSize: 11 }} />
-          <XAxis dataKey="time" minTickGap={75} tickFormatter={s => s.split(",")[0]} tickLine={false} axisLine={false} tick={{ fill: "var(--secondary)", fontSize: 11 }} />
-          <Tooltip formatter={value => [dollars(Number(value)), "Капитал"]} contentStyle={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 10 }} />
-          <Area type="linear" dataKey="value" stroke="var(--accent-text)" strokeWidth={2} fill="url(#equity-fill)" connectNulls={false} dot={points.length < 3} />
-        </AreaChart>
-      </ResponsiveContainer> : <div className="chart-grid"><Empty icon={ChartNoAxesCombined}
-        title={selected ? "Нет подтверждённых оценок" : "Нет данных по капиталу"}
-        text={selected ? "Выберите другой период или дождитесь оценки позиций." : "Кривая появится после запуска первого теста."}
-        action={selected ? undefined : <Button size="small" variant="outline" onClick={start}>Создать тест <ArrowRight size={14} /></Button>} /></div>}
-    </div></Panel>;
+    {points.some(p => p.value != null) ? <div className="chart-area"><ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
+      <LineChart data={points} margin={{ top: 12, left: 0, right: 14, bottom: 5 }} accessibilityLayer>
+        <CartesianGrid stroke="var(--line)" vertical={false} />
+        <YAxis tickFormatter={n => "$" + n} domain={["auto", "auto"]} width={60} tickLine={false} axisLine={false} tick={{ fill: "var(--secondary)", fontSize: 12 }} />
+        <XAxis dataKey="time" minTickGap={70} tickFormatter={s => s.split(",")[0]} tickLine={false} axisLine={false} tick={{ fill: "var(--secondary)", fontSize: 12 }} />
+        <Tooltip formatter={value => [dollars(Number(value)), "Капитал"]} contentStyle={{ background: "var(--panel)", color: "var(--text)", border: "1px solid var(--line-strong)", borderRadius: 5 }} />
+        <Line type="linear" dataKey="value" stroke="var(--accent-text)" strokeWidth={2} connectNulls={false} dot={points.length < 3} isAnimationActive={false} />
+      </LineChart>
+    </ResponsiveContainer></div> : <Empty
+      title={selected ? "За этот период нет оценок" : "Портфель пока пуст"}
+      text={selected ? "Выберите другой период или дождитесь следующего расчёта." : "Запустите тест, чтобы открыть виртуальный банк."}
+      action={!selected && <Button size="small" variant="outline" onClick={start}>Новый тест <ArrowRight size={14} aria-hidden="true" /></Button>} />}
+  </Panel>;
 }
-function RunTable({ runs, onPause, ranking }: { runs: Run[]; onPause?: (run: Run) => void; ranking?: boolean }) {
-  if (!runs.length) return <Empty icon={FlaskConical} title={ranking ? "Нет рассчитанных сделок за неделю" : "Нет запущенных тестов"} text={ranking ? "Рейтинг появится после расчёта первых позиций." : "Запустите стратегию, чтобы сформировать независимый виртуальный банк."} />;
-  return <div className="table-wrap"><table><thead><tr><th>Стратегия</th><th>{ranking ? "PnL · 7 д" : "Рассчитанный PnL"}</th><th>ROI{ranking ? " · 7 д" : ""}</th><th>Win rate / 95% ДИ</th><th>Макс. просадка</th><th>{ranking ? "Сделки · 7 д" : "Сделки / пропуски"}</th><th>{onPause ? "Статус" : "Комиссии"}</th></tr></thead>
-    <tbody>{runs.map(run => {
+
+function RunTable({ runs, onPause, ranking, collectorActive }: {
+  runs: Run[]; onPause?: (run: Run) => void; ranking?: boolean; collectorActive?: boolean;
+}) {
+  if (!runs.length) return <Empty title={ranking ? "Нет рассчитанных сделок за неделю" : "Нет запущенных тестов"} text={ranking ? "Рейтинг появится после расчёта первых позиций." : "Запустите стратегию, чтобы сформировать независимый виртуальный банк."} />;
+  return <div className="table-wrap"><table role="table"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Стратегия</th><th scope="col" role="columnheader">{ranking ? "PnL · 7 д" : "Рассчитанный PnL"}</th><th scope="col" role="columnheader">ROI{ranking ? " · 7 д" : ""}</th><th scope="col" role="columnheader">Win rate / 95% ДИ</th><th scope="col" role="columnheader">Макс. просадка</th><th scope="col" role="columnheader">{ranking ? "Сделки · 7 д" : "Сделки / пропуски"}</th><th scope="col" role="columnheader">{onPause ? "Статус" : "Комиссии"}</th></tr></thead>
+    <tbody role="rowgroup">{runs.map(run => {
       const ci = ranking ? run.weeklyInterval95 : run.interval95;
       const rate = ranking ? (run.weekly_settled ? run.weekly_wins / run.weekly_settled : null) : run.winRate;
-      return <tr key={run.id}><td><strong>{strategies[run.strategy].name}</strong><small>v{run.version} · {shortMode(run.mode)} · {dollars(run.bank)}</small></td>
-        <td className="number">{dollars(ranking ? run.weekly_pnl : run.pnl)}</td><td className="number">{percent(ranking ? run.weekly_pnl / run.bank : run.roi)}</td>
-        <td className="number">{percent(rate)}<small>{ci ? percent(ci[0]) + " – " + percent(ci[1]) : "—"}</small></td>
-        <td className="number">{percent(run.drawdown)}</td><td className="number">{ranking ? run.weekly_settled : `${run.fills} / ${run.missed}`}</td>
-        <td>{onPause ? <><span className={"tag " + (status(run) === "Активен" ? "good" : "muted")}>{status(run)}</span>
+      return <tr role="row" key={run.id}><td role="cell"><strong>{strategies[run.strategy].name}</strong><small>v{run.version} · {shortMode(run.mode)} · {dollars(run.bank)}</small>
+          {collectorActive === false && strategies[run.strategy].collector && status(run) === "Активен" && <small className="warning">Сборщик котировок выключен</small>}</td>
+        <td role="cell" data-label="PnL" className="number">{dollars(ranking ? run.weekly_pnl : run.pnl)}</td><td role="cell" data-label="ROI" className="number">{percent(ranking ? run.weekly_pnl / run.bank : run.roi)}</td>
+        <td role="cell" data-label="Доля прибыльных" className="number">{percent(rate)}<small>{ci ? percent(ci[0]) + " – " + percent(ci[1]) : "—"}</small></td>
+        <td role="cell" data-label="Макс. просадка" className="number">{percent(run.drawdown)}</td><td role="cell" data-label="Сделки" className="number">{ranking ? run.weekly_settled : `${run.fills} / ${run.missed}`}</td>
+        <td role="cell" data-label={onPause ? "Статус" : "Комиссии"} className={onPause ? "run-controls" : undefined}>{onPause ? <><span className={"tag " + (status(run) === "Активен" ? "good" : "muted")}>{status(run)}</span>
           {!run.risk_blocked && +new Date(run.ends_at) > Date.now() && <Button variant="ghost" size="small" onClick={() => onPause(run)}>{run.paused ? "Возобновить" : "Пауза"}</Button>}</> : <>{dollars(run.fees)}<small>Проск. {run.slippage == null ? "—" : run.slippage.toFixed(1) + " б.п."}</small></>}</td></tr>;
     })}</tbody></table></div>;
 }
@@ -199,10 +241,10 @@ function StartForm({ strategy, wallet, wallets, onSubmit, busy }: { strategy: St
     onSubmit({ requestId: requestId.current, strategy: selected, mode: f.get("mode"), wallet: f.get("wallet"), bank: Number(f.get("bank")),
       stake: Number(f.get("stake")), days: Number(days), drawdown: Number(f.get("drawdown")), exposure: Number(f.get("exposure")), slippage: Number(f.get("slippage")) });
   }
-  return <form className="run-form" onSubmit={submit}>
-    <label>Стратегия<select value={selected} onChange={e => setSelected(e.target.value as Strategy)}>{strategyIds.map(id => <option value={id} key={id}>{strategies[id].name} · v{strategies[id].version}</option>)}</select></label>
+  return <form className="run-form" onSubmit={submit} autoComplete="off">
+    <label>Стратегия<select name="strategy" value={selected} onChange={e => setSelected(e.target.value as Strategy)}>{strategyIds.map(id => <option value={id} key={id}>{strategies[id].name} · v{strategies[id].version}</option>)}</select></label>
     <p>{strategies[selected].description}. Параметры сохраняются на весь тест.</p>
-    {selected === "copy" && <label>Публичный кошелёк<input name="wallet" list="wallets" defaultValue={wallet} required pattern="0x[0-9a-fA-F]{40}" />
+    {selected === "copy" && <label>Публичный кошелёк<input name="wallet" autoComplete="off" spellCheck={false} list="wallets" defaultValue={wallet} required pattern="0x[0-9a-fA-F]{40}" />
       <datalist id="wallets">{wallets.map(w => <option value={w.address} key={w.address}>{w.name}</option>)}</datalist></label>}
     <label>Режим<select name="mode"><option value="auto">Автоматический</option><option value="confirm">Подтверждение в Telegram</option><option value="both">Оба режима · два независимых банка</option></select></label>
     <div className="fields"><label>Виртуальный банк, $<input name="bank" type="number" min="10" max="1000000" step=".01" defaultValue="1000" required /></label>
@@ -213,9 +255,9 @@ function StartForm({ strategy, wallet, wallets, onSubmit, busy }: { strategy: St
     <fieldset><legend>Продолжительность</legend><div className="segments">
       {[7, 14, 21].map(n => <button type="button" key={n} className={!custom && +days === n ? "selected" : ""} onClick={() => { setDays(String(n)); setCustom(false); }}>{n} дней</button>)}
       <button type="button" className={custom ? "selected" : ""} onClick={() => setCustom(true)}>Своя</button></div></fieldset>
-    {custom && <label>Дни<input aria-label="Своя продолжительность в днях" type="number" min=".05" max="365" step="any" value={days} onChange={e => setDays(e.target.value)} required /></label>}
-    {strategies[selected].collector && <p className="notice"><Zap size={15} /> Для точных наблюдений нужен запущенный WebSocket-сборщик.</p>}
-    <Button type="submit" disabled={busy}>{busy ? "Запускаю…" : "Запустить тест"}<ArrowRight size={16} /></Button>
+    {custom && <label>Дни<input name="custom-duration" aria-label="Своя продолжительность в днях" type="number" min=".05" max="365" step="any" value={days} onChange={e => setDays(e.target.value)} required /></label>}
+    {strategies[selected].collector && <p className="notice">Для этой стратегии нужен сборщик котировок Polymarket.</p>}
+    <Button type="submit" disabled={busy}>{busy ? "Запускаю…" : "Запустить тест"}<ArrowRight size={16} aria-hidden="true" /></Button>
   </form>;
 }
 
@@ -224,7 +266,7 @@ export function Workspace() {
   const [data, setData] = useState<WorkspaceData | null>(null);
   const [offline, setOffline] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [theme, setTheme] = useState("dark");
+  const [theme, setTheme] = useState("light");
   const [drawer, setDrawer] = useState(false);
   const [dialog, setDialog] = useState<"start" | "auth" | null>(null);
   const [selected, setSelected] = useState<Strategy>("btc15");
@@ -244,7 +286,7 @@ export function Workspace() {
   }, []);
   useEffect(() => {
     const tg = (window as unknown as { Telegram?: { WebApp?: TelegramApp } }).Telegram?.WebApp;
-    const preferred = localStorage.getItem("polytrader-theme") ?? (tg?.initData ? tg.colorScheme : null) ?? "dark";
+    const preferred = localStorage.getItem("polytrader-theme") ?? (tg?.initData ? tg.colorScheme : null) ?? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
     document.documentElement.dataset.theme = preferred;
     setTheme(preferred);
     tg?.ready(); tg?.expand();
@@ -275,7 +317,13 @@ export function Workspace() {
     }, 2500);
     return () => clearInterval(timer);
   }, [pair, dialog, refresh]);
-  function navigate(next: Page) { setPage(next); setDrawer(false); window.location.hash = next; window.scrollTo(0, 0); }
+  function navigate(next: Page) {
+    setPage(next);
+    setDrawer(false);
+    if (window.location.hash !== "#" + next) window.location.hash = next;
+    window.scrollTo(0, 0);
+    requestAnimationFrame(() => document.getElementById("page-title")?.focus({ preventScroll: true }));
+  }
   function toggleTheme() {
     const next = theme === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = next;
@@ -297,113 +345,157 @@ export function Workspace() {
   const capital = runs.reduce((s, r) => s + r.bank, 0);
   const pnl = runs.reduce((s, r) => s + r.pnl, 0);
   const headline = navigation.find(n => n.id === page)!;
-  const descriptions: Record<Page, string> = {
-    dashboard: "Следите за тестами стратегий, рынками и качеством исполнения.",
-    strategies: "Запускайте независимые тесты с заранее зафиксированными правилами.",
-    markets: "Текущие раунды BTC и котировки из каталога Polymarket.",
-    copy: "Публичные кошельки для исследования и виртуального копирования.",
-    combos: "Позиции от $2 000 среди наблюдаемых авторов Polymarket.",
-    portfolio: "Баланс, риск и состояние каждого виртуального банка.",
-    history: "Исполнения, частичные сделки и причины пропущенных сигналов.",
-    analytics: "Доходность, просадка и статистическая надёжность тестов.",
-    settings: "Подключение Telegram, тема и состояние источников данных.",
+  const openAuth = () => {
+    setMessage("");
+    startAfterAuth.current = false;
+    setDialog("auth");
   };
   return <div className="workspace">
-    {drawer && <button className="scrim" aria-label="Закрыть меню" onClick={() => setDrawer(false)} />}
-    <aside className={"sidebar " + (drawer ? "sidebar-open" : "")}>
-      <button className="brand-button" onClick={() => navigate("dashboard")} aria-label="PolyTrader Lab, обзор"><Brand /></button>
-      <nav aria-label="Разделы">
-        <div className="nav-group"><span>ЛАБОРАТОРИЯ</span>{navigation.slice(0, 5).map(n => <a key={n.id} href={"#" + n.id} onClick={e => { e.preventDefault(); navigate(n.id); }} aria-current={page === n.id ? "page" : undefined}><n.icon size={18} />{n.title}</a>)}</div>
-        <div className="nav-group"><span>РЕЗУЛЬТАТЫ</span>{navigation.slice(5).map(n => <a key={n.id} href={"#" + n.id} onClick={e => { e.preventDefault(); navigate(n.id); }} aria-current={page === n.id ? "page" : undefined}><n.icon size={18} />{n.title}</a>)}</div>
-      </nav>
-      <div className="sidebar-bottom"><span className="paper-icon"><FlaskConical size={17} /></span><div><strong>Paper Trading</strong><small>Виртуальное исполнение</small></div></div>
+    <a className="skip-link" href="#main">К содержимому</a>
+    <aside className="sidebar">
+      <a className="brand-link" href="#dashboard" onClick={e => { e.preventDefault(); navigate("dashboard"); }}><Brand /></a>
+      <RouteLinks page={page} navigate={navigate} />
+      <div className="sidebar-bottom"><span className="status-dot" aria-hidden="true" />Режим симуляции</div>
     </aside>
     <div className="main-shell">
       <header className="topbar">
-        <div className="breadcrumbs"><Button variant="ghost" size="icon" className="mobile-menu" aria-label="Открыть меню" onClick={() => setDrawer(true)}><Menu size={21} /></Button>
-          <span>Лаборатория</span><span className="slash">/</span><strong>{headline.english}</strong></div>
-        <div className="toolbar"><span className="network"><i className={offline ? "offline" : data ? "online" : ""} />{offline ? "Нет связи" : data ? "Данные Polymarket" : "Подключение"}</span>
-          <Button variant="ghost" size="icon" aria-label="Сменить тему" onClick={toggleTheme}>{theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}</Button>
-          {data?.user ? <button className="avatar" aria-label="Настройки аккаунта" onClick={() => navigate("settings")}>{data.user.name.slice(0, 2).toUpperCase()}</button>
-            : <Button size="small" variant="outline" onClick={() => { setMessage(""); startAfterAuth.current = false; setDialog("auth"); }}><Send size={14} /> Войти</Button>}
+        <span className="desktop-mode">Виртуальная торговля <span>на Polymarket</span></span>
+        <a className="brand-link mobile-brand" href="#dashboard" onClick={e => { e.preventDefault(); navigate("dashboard"); }}><Brand /></a>
+        <div className="toolbar">
+          <span className="network"><i className={offline ? "offline" : data ? "online" : ""} aria-hidden="true" />
+            {offline ? "Нет связи" : data ? "Данные Polymarket" : "Подключение"}
+          </span>
+          <Button variant="ghost" size="icon" aria-label={theme === "dark" ? "Включить светлую тему" : "Включить тёмную тему"} onClick={toggleTheme}>
+            {theme === "dark" ? <Sun size={19} aria-hidden="true" /> : <Moon size={19} aria-hidden="true" />}
+          </Button>
+          {data?.user ? <button className="avatar" aria-label="Настройки аккаунта" onClick={() => navigate("settings")}>
+            {data.user.name.slice(0, 2).toUpperCase()}
+          </button> : <Button size="small" variant="outline" onClick={openAuth}>Войти</Button>}
         </div>
       </header>
-      <main id="main" className="content">
-        <div className="page-head"><div><div className="eyebrow"><span /> POLYMARKET · PAPER TRADING</div><h1>{headline.title}</h1><p>{descriptions[page]}</p></div>
-          <Button onClick={() => openStart()}><Plus size={18} /> Новый тест</Button></div>
-        {offline && <div className="notice" role="status"><Activity size={17} /> Данные временно недоступны. <button onClick={refresh}>Повторить</button></div>}
-        {message && !dialog && <div className="notice" role="status">{message}<Button size="icon" variant="ghost" aria-label="Закрыть сообщение" onClick={() => setMessage("")}><X size={15} /></Button></div>}
+      <main id="main" className="content" tabIndex={-1}>
+        <div className="page-head">
+          <h1 id="page-title" tabIndex={-1}>{headline.title}</h1>
+          {(page === "dashboard" || page === "strategies") && <Button onClick={() => openStart()}>
+            <Plus size={17} aria-hidden="true" /> Новый тест
+          </Button>}
+        </div>
+        {offline && <div className="notice" role="status"><Activity size={17} aria-hidden="true" /> Данные временно недоступны. <button onClick={refresh}>Повторить</button></div>}
+        {message && !dialog && <div className="notice" role="status">{message}<Button size="icon" variant="ghost" aria-label="Закрыть сообщение" onClick={() => setMessage("")}><X size={15} aria-hidden="true" /></Button></div>}
         {page === "dashboard" && <>
-          <div className="metrics">
-            {[
-              { label: "Виртуальный банк", value: runs.length ? dollars(capital) : "—", hint: "Сумма стартовых банков", icon: Wallet },
-              { label: "Рассчитанный PnL", value: settled ? dollars(pnl) : "—", hint: settled ? `ROI ${percent(pnl / capital)}` : "По закрытым позициям", icon: ChartNoAxesCombined },
-              { label: "Win rate", value: settled ? percent(wins / settled) : "—", hint: settled ? `${wins} из ${settled} сделок` : "Ожидание расчётов", icon: Target },
-              { label: "Активные тесты", value: data ? String(active) : "—", hint: `Доступно ${strategyIds.length} стратегий`, icon: FlaskConical },
-            ].map(m => <Panel className="metric" key={m.label}><div><span>{m.label}</span><m.icon size={17} /></div><strong>{m.value}</strong><small>{m.hint}</small></Panel>)}
+          <section className="portfolio-summary" aria-labelledby="portfolio-summary-title">
+            <div className="summary-heading">
+              <h2 id="portfolio-summary-title">Виртуальный портфель</h2>
+              {runs.length > 0 && <a href="#portfolio" onClick={e => { e.preventDefault(); navigate("portfolio"); }}>
+                Открыть портфель <ArrowRight size={15} aria-hidden="true" />
+              </a>}
+            </div>
+            {runs.length ? <dl className="summary-metrics">
+              <div><dt>Стартовый капитал</dt><dd>{dollars(capital)}</dd></div>
+              <div><dt>Рассчитанный PnL</dt><dd><span className={pnl < 0 ? "summary-negative" : undefined}>{settled ? dollars(pnl) : "—"}</span>
+                {settled > 0 && <small>ROI {percent(pnl / capital)}</small>}</dd></div>
+              <div><dt>Доля прибыльных</dt><dd>{settled ? percent(wins / settled) : "—"}{settled > 0 && <small>{wins} из {settled}</small>}</dd></div>
+              <div><dt>Активные тесты</dt><dd>{active}</dd></div>
+            </dl> : <p>{loading ? "Загружаю портфель…" : data?.user ? "Создайте тест, чтобы начать виртуальную торговлю." : "Войдите через Telegram, чтобы запустить свой первый тест."}</p>}
+            {runs.some(r => strategies[r.strategy].collector && status(r) === "Активен") && !collectorOnline(data) &&
+              <a className="summary-status" href="#settings" onClick={e => { e.preventDefault(); navigate("settings"); }}>
+                Сборщик котировок выключен <ArrowRight size={14} aria-hidden="true" />
+              </a>}
+          </section>
+          <div className="overview-grid">
+            <Panel className="overview-markets"><div className="panel-head"><div><h2>Рынки BTC</h2><p>Котировки Polymarket · время по Киеву</p></div>
+              <a className="section-link" href="#markets" onClick={e => { e.preventDefault(); navigate("markets"); }}>
+                Все рынки <ArrowRight size={15} aria-hidden="true" />
+              </a></div>
+              <MarketTable markets={(data?.markets ?? []).filter(m => m.interval_minutes != null).slice(0,4)} loading={loading} />
+            </Panel>
+            <Panel><div className="panel-head"><h2>Покрытие данных</h2></div>
+              <MarketHealth data={data} unavailable={offline} />
+              <a className="panel-link" href="#settings" onClick={e => { e.preventDefault(); navigate("settings"); }}>
+                Настройки источников <ArrowRight size={15} aria-hidden="true" />
+              </a>
+            </Panel>
           </div>
-          <div className="overview-grid"><Equity data={data} start={() => openStart()} />
-            <Panel><div className="panel-head"><div><h2>Источники данных</h2><p>Покрытие и исполнение</p></div><Radio size={19} className="accent" /></div>
-              <MarketHealth data={data} unavailable={offline} /><button className="panel-link" onClick={() => navigate("settings")}>Состояние системы <ArrowUpRight size={15} /></button></Panel>
-          </div>
-          <Panel><div className="panel-head"><div><h2>Последние сигналы</h2><p>Решения ваших активных и завершённых тестов</p></div>
-            <Button variant="outline" size="small" onClick={() => navigate("history")}>Весь журнал <ArrowRight size={14} /></Button></div>
-            <Trades rows={trades.slice(0, 5)} /></Panel>
+          {runs.length > 0 && <Equity data={data} start={() => openStart()} />}
+          {data?.user && <Panel><div className="panel-head"><h2>Последние сигналы</h2>
+            <a className="section-link" href="#history" onClick={e => { e.preventDefault(); navigate("history"); }}>
+              Весь журнал <ArrowRight size={15} aria-hidden="true" />
+            </a></div><Trades rows={trades.slice(0, 5)} /></Panel>}
         </>}
-        {page === "strategies" && <><div className="strategy-grid">{strategyIds.map(id => {
-          const Icon = icons[id];
-          return <Panel className="strategy-card" key={id}><div className="strategy-top"><span className="strategy-icon"><Icon size={22} /></span><span className="tag muted">v{strategies[id].version}</span></div>
-            <h2>{strategies[id].name}</h2><p>{strategies[id].description}</p><div className="strategy-bottom"><span className={"tag " + (strategies[id].collector ? "amber" : "violet")}>{strategies[id].collector ? "WebSocket" : "API"}</span>
-            <Button variant="outline" size="small" onClick={() => openStart(id)}>Тестировать <ArrowRight size={14} /></Button></div></Panel>;
-        })}</div><Panel><div className="panel-head"><div><h2>Ваши тесты</h2><p>Режимы исполнения и версии стратегии</p></div></div>
-          <RunTable runs={runs} onPause={r => void mutate(() => api("experiments/pause", { id: r.id, paused: !r.paused }), r.paused ? "Тест возобновлён" : "Тест на паузе")} /></Panel></>}
-        {page === "markets" && <Panel><div className="panel-head"><div><h2>Каталог раундов BTC</h2><p>Цены каталога · свежий стакан проверяется отдельно при исполнении</p></div>
-          <select aria-label="Длительность раунда" value={marketFilter} onChange={e => setMarketFilter(e.target.value)}><option value="all">Все раунды</option><option value="5">5 минут</option><option value="15">15 минут</option></select></div>
-          {data?.markets.some(m => marketFilter === "all" || String(m.interval_minutes) === marketFilter) ? <div className="table-wrap"><table><thead><tr><th>Рынок</th><th>Исходы</th><th>Закрытие · Киев</th><th>Снимок</th></tr></thead><tbody>
-            {data.markets.filter(m => marketFilter === "all" || String(m.interval_minutes) === marketFilter).map(m => <tr key={m.condition}><td><a href={`https://polymarket.com/event/${encodeURIComponent(m.slug)}`} target="_blank" rel="noreferrer">{m.title} <ArrowUpRight size={13} /></a></td>
-              <td>{m.outcomes.map((o, i) => <span key={o} className="tag violet">{o} {price(m.prices[i])}</span>)}</td><td className="number">{when(m.ends_at)}</td><td className="number">{clock(m.seen_at)}</td></tr>)}
-          </tbody></table></div> : <Empty icon={Radio} title={loading ? "Загрузка рынков" : "Нет свежих рынков"} text="Данные появятся после успешного обновления каталога." />}</Panel>}
+        {page === "strategies" && <>
+          <Panel><div className="panel-head"><h2>Ваши тесты</h2></div>
+            <RunTable runs={runs} collectorActive={collectorOnline(data)} onPause={r => void mutate(() => api("experiments/pause", { id: r.id, paused: !r.paused }), r.paused ? "Тест возобновлён" : "Тест на паузе")} />
+          </Panel>
+          <Panel><div className="panel-head"><div><h2>Каталог стратегий</h2><p>Правила фиксируются при запуске теста.</p></div></div>
+            <ul className="strategy-list">{strategyIds.map(id => (
+              <li key={id}><div><h3>{strategies[id].name}</h3><p>{strategies[id].description}</p>
+                <small>v{strategies[id].version}{strategies[id].collector ? " · Нужен сборщик котировок" : ""}</small>
+              </div><Button variant="outline" size="small" onClick={() => openStart(id)} aria-label={`Тестировать: ${strategies[id].name}`}>
+                Тестировать <ArrowRight size={14} aria-hidden="true" />
+              </Button></li>
+            ))}</ul>
+          </Panel>
+        </>}
+        {page === "markets" && <Panel><div className="panel-head"><div><h2>Каталог раундов BTC</h2><p>Котировки Polymarket · время по Киеву</p></div>
+          <select aria-label="Длительность раунда" value={marketFilter} onChange={e => setMarketFilter(e.target.value)}>
+            <option value="all">Все раунды</option><option value="5">5 минут</option><option value="15">15 минут</option>
+          </select></div>
+          <MarketTable markets={(data?.markets ?? []).filter(m => marketFilter === "all" || String(m.interval_minutes) === marketFilter)}
+            loading={loading} filtered={marketFilter !== "all"} />
+        </Panel>}
         {page === "copy" && <><Panel><div className="panel-head"><div><h2>Кандидаты для наблюдения</h2><p>Рейтинг Polymarket за неделю · история загружается постранично</p></div>
-          <input aria-label="Поиск кошелька" placeholder="Имя или 0x…" value={walletSearch} onChange={e => setWalletSearch(e.target.value)} /></div>
-          {data?.wallets.some(w => (w.name + w.address).toLowerCase().includes(walletSearch.toLowerCase())) ? <div className="table-wrap"><table><thead><tr><th>Кошелёк</th><th>Источник</th><th>Публичный PnL</th><th>История</th></tr></thead><tbody>
-            {data.wallets.filter(w => (w.name + w.address).toLowerCase().includes(walletSearch.toLowerCase())).map(w => <tr key={w.address}><td><a href={`https://polymarket.com/profile/${w.address}`} target="_blank" rel="noreferrer"><strong>{w.name}</strong> <ArrowUpRight size={13} /></a><small className="number">{compactWallet(w.address)}</small></td>
-              <td><span className="tag muted">{w.source === "research" ? "Исследование" : w.source}</span></td><td className="number">{dollars(w.public_pnl)}</td><td>{count(w.records)} записей<small>{w.history_complete ? "Архив выгружен" : "Архив неполный"}</small><small>Покупки {count(w.buys)} · продажи {count(w.sells)} · погашения {count(w.redeems)}</small></td></tr>)}
-          </tbody></table></div> : <Empty icon={Users} title="Кошельки не найдены" text="Измените поиск или дождитесь обновления рейтинга." />}</Panel>
+          <input aria-label="Поиск кошелька" placeholder="Имя или 0x…" name="wallet-search" autoComplete="off" spellCheck={false} value={walletSearch} onChange={e => setWalletSearch(e.target.value)} /></div>
+          {data?.wallets.some(w => (w.name + w.address).toLowerCase().includes(walletSearch.toLowerCase())) ? <div className="table-wrap"><table role="table"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Кошелёк</th><th scope="col" role="columnheader">Источник</th><th scope="col" role="columnheader">Публичный PnL</th><th scope="col" role="columnheader">История</th></tr></thead><tbody role="rowgroup">
+            {data.wallets.filter(w => (w.name + w.address).toLowerCase().includes(walletSearch.toLowerCase())).map(w => <tr role="row" key={w.address}><td role="cell"><a href={`https://polymarket.com/profile/${w.address}`} target="_blank" rel="noreferrer"><strong>{w.name}</strong> <ArrowUpRight size={13} aria-hidden="true" /></a><small className="number">{compactWallet(w.address)}</small></td>
+              <td role="cell" data-label="Источник"><span className="tag muted">{w.source === "research" ? "Исследование" : w.source}</span></td><td role="cell" data-label="Публичный PnL" className="number">{dollars(w.public_pnl)}</td><td role="cell" data-label="История">{count(w.records)} записей<small>{w.history_complete ? "Архив выгружен" : "Архив неполный"}</small><small>Покупки: {count(w.buys)}, продажи: {count(w.sells)}, погашения: {count(w.redeems)}</small></td></tr>)}
+          </tbody></table></div> : <Empty title="Кошельки не найдены" text="Измените поиск или дождитесь обновления рейтинга." />}</Panel>
           {data?.wallets.some(w => w.source === "crypto" && (w.public_pnl ?? 0) > 0 && w.buys >= 100) && <Panel>
-            <div className="panel-head"><div><h2>Гипотезы для проверки</h2><p>Кандидаты с положительным недельным PnL и минимум 100 покупками в архиве</p></div><FlaskConical size={19} className="accent" /></div>
+            <div className="panel-head"><div><h2>Гипотезы для проверки</h2><p>Кандидаты с положительным недельным PnL и минимум 100 покупками в архиве</p></div></div>
             <div className="setting-rows">{data.wallets.filter(w => w.source === "crypto" && (w.public_pnl ?? 0) > 0 && w.buys >= 100).slice(0,5).map(w => <div key={w.address}><span><strong>Проверить копирование {w.name}</strong><small>{count(w.buys)} покупок · {compactWallet(w.address)}</small></span>
-              <Button variant="outline" size="small" onClick={() => openStart("copy", w.address)}>Настроить тест <ArrowRight size={14} /></Button></div>)}</div>
+              <Button variant="outline" size="small" onClick={() => openStart("copy", w.address)}>Настроить тест <ArrowRight size={14} aria-hidden="true" /></Button></div>)}</div>
           </Panel>}</>}
         {page === "combos" && <Panel><div className="panel-head"><div><h2>Крупные комбо</h2><p>Стоимость входа в позицию · повторы проверяются после обнаружения</p></div>
           <select aria-label="Сортировка комбо" value={comboSort} onChange={e => setComboSort(e.target.value)}><option value="time">По обнаружению</option><option value="stake">По размеру</option><option value="author">По PnL автора</option></select></div>
-          {data?.combos.length ? <div className="table-wrap"><table><thead><tr><th>Комбо</th><th>Автор</th><th>Стоимость</th><th>Обнаружено · Киев</th></tr></thead><tbody>
-            {[...data.combos].sort((a, b) => comboSort === "stake" ? b.stake - a.stake : comboSort === "author" ? (b.author_pnl ?? -Infinity) - (a.author_pnl ?? -Infinity) : +new Date(b.detected_at) - +new Date(a.detected_at)).map(c => <tr key={c.id}><td><strong>{c.payload.legs.map(l => l.market.title + " · " + l.leg_outcome_label).join(" / ")}</strong><small>{c.payload.status}</small></td><td><a href={`https://polymarket.com/profile/${c.wallet}`} target="_blank" rel="noreferrer">{c.name ?? compactWallet(c.wallet)} <ArrowUpRight size={13} /></a><small>{dollars(c.author_pnl)}</small></td><td className="number">{dollars(c.stake)}</td><td className="number">{when(c.detected_at)}</td></tr>)}
-          </tbody></table></div> : <Empty icon={Layers3} title="Комбо ещё не обнаружены" text="Мониторинг проверяет публичные позиции авторов из рейтинга комбо." />}</Panel>}
+          {data?.combos.length ? <div className="table-wrap"><table role="table"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Комбо</th><th scope="col" role="columnheader">Автор</th><th scope="col" role="columnheader">Стоимость</th><th scope="col" role="columnheader">Обнаружено · Киев</th></tr></thead><tbody role="rowgroup">
+            {[...data.combos].sort((a, b) => comboSort === "stake" ? b.stake - a.stake : comboSort === "author" ? (b.author_pnl ?? -Infinity) - (a.author_pnl ?? -Infinity) : +new Date(b.detected_at) - +new Date(a.detected_at)).map(c => <tr role="row" key={c.id}><td role="cell"><strong>{c.payload.legs.map(l => l.market.title + " · " + l.leg_outcome_label).join(" / ")}</strong><small>{c.payload.status}</small></td><td role="cell" data-label="Автор"><a href={`https://polymarket.com/profile/${c.wallet}`} target="_blank" rel="noreferrer">{c.name ?? compactWallet(c.wallet)} <ArrowUpRight size={13} aria-hidden="true" /></a><small>{dollars(c.author_pnl)}</small></td><td role="cell" data-label="Стоимость" className="number">{dollars(c.stake)}</td><td role="cell" data-label="Обнаружено · Киев" className="number">{when(c.detected_at)}</td></tr>)}
+          </tbody></table></div> : <Empty title="Комбо ещё не обнаружены" text="Мониторинг проверяет публичные позиции авторов из рейтинга комбо." />}</Panel>}
         {page === "portfolio" && <><Equity data={data} start={() => openStart()} /><Panel><div className="panel-head"><div><h2>Виртуальные банки</h2><p>Свободные средства и последняя оценка капитала</p></div></div>
-          {runs.length ? <div className="table-wrap"><table><thead><tr><th>Тест</th><th>Свободно</th><th>Капитал</th><th>Завершение · Киев</th><th>Статус</th></tr></thead><tbody>{runs.map(r => <tr key={r.id}><td><strong>{strategies[r.strategy].name}</strong><small>{shortMode(r.mode)} · v{r.version}</small></td><td className="number">{dollars(r.cash)}</td><td className="number">{dollars(r.equity)}</td><td className="number">{when(r.ends_at)}</td><td><span className="tag muted">{status(r)}</span></td></tr>)}</tbody></table></div> : <Empty icon={Wallet} title="Портфель пуст" text="Запустите тест, чтобы создать виртуальный банк." />}</Panel></>}
+          {runs.length ? <div className="table-wrap"><table role="table"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Тест</th><th scope="col" role="columnheader">Свободно</th><th scope="col" role="columnheader">Капитал</th><th scope="col" role="columnheader">Завершение · Киев</th><th scope="col" role="columnheader">Статус</th></tr></thead><tbody role="rowgroup">{runs.map(r => <tr role="row" key={r.id}><td role="cell"><strong>{strategies[r.strategy].name}</strong><small>{shortMode(r.mode)} · v{r.version}</small></td><td role="cell" data-label="Свободно" className="number">{dollars(r.cash)}</td><td role="cell" data-label="Капитал" className="number">{dollars(r.equity)}</td><td role="cell" data-label="Завершение · Киев" className="number">{when(r.ends_at)}</td><td role="cell" data-label="Статус"><span className="tag muted">{status(r)}</span></td></tr>)}</tbody></table></div> : <Empty title="Портфель пуст" text="Запустите тест, чтобы создать виртуальный банк." />}</Panel></>}
         {page === "history" && <HistoryPanel enabled={!!data?.user} />}
         {page === "analytics" && <><Panel><div className="panel-head"><div><h2>Рейтинг за 7 дней</h2><p>По реализованному ROI · 95% интервал Уилсона для доли прибыльных сделок</p></div></div>
           <RunTable runs={runs.filter(r => r.weekly_settled).sort((a, b) => b.weekly_pnl / b.bank - a.weekly_pnl / a.bank || a.drawdown - b.drawdown || b.weekly_settled - a.weekly_settled)} ranking /></Panel>
           <Panel><div className="panel-head"><div><h2>Сравнение тестов</h2><p>За весь период тестирования</p></div></div><RunTable runs={runs} /></Panel>
-          <Panel><div className="panel-head"><div><h2>Точность сигналов BTC</h2><p>95-й перцентиль абсолютного отклонения от T−30 и T−60</p></div><Clock3 size={19} className="accent" /></div>
-            {runs.some(r => r.strategy === "btc5" || r.strategy === "btc15") ? <div className="table-wrap"><table><thead><tr><th>Тест</th><th>Отклонение P95</th><th>Пропущено окон</th></tr></thead><tbody>{runs.filter(r => r.strategy === "btc5" || r.strategy === "btc15").map(r => <tr key={r.id}><td>{strategies[r.strategy].name} · {shortMode(r.mode)}</td><td className="number">{r.timing_p95 == null ? "—" : Math.round(r.timing_p95) + " мс"}</td><td className="number">{r.timing_missing}</td></tr>)}</tbody></table></div> : <Empty icon={Clock3} title="Нет измерений времени" text="Запустите BTC-тест и подключите WebSocket-сборщик." />}</Panel></>}
+          <Panel><div className="panel-head"><div><h2>Точность сигналов BTC</h2><p>95-й перцентиль абсолютного отклонения от T−30 и T−60</p></div></div>
+            {runs.some(r => r.strategy === "btc5" || r.strategy === "btc15") ? <div className="table-wrap"><table role="table"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Тест</th><th scope="col" role="columnheader">Отклонение P95</th><th scope="col" role="columnheader">Пропущено окон</th></tr></thead><tbody role="rowgroup">{runs.filter(r => r.strategy === "btc5" || r.strategy === "btc15").map(r => <tr role="row" key={r.id}><td role="cell">{strategies[r.strategy].name} · {shortMode(r.mode)}</td><td role="cell" data-label="Отклонение P95" className="number">{r.timing_p95 == null ? "—" : Math.round(r.timing_p95) + " мс"}</td><td role="cell" data-label="Пропущено окон" className="number">{r.timing_missing}</td></tr>)}</tbody></table></div> : <Empty title="Нет измерений времени" text="Запустите BTC-тест и подключите WebSocket-сборщик." />}</Panel></>}
         {page === "settings" && <div className="overview-grid">
-          <Panel><div className="panel-head"><div><h2>Профиль и уведомления</h2><p>{data?.user ? data.user.name : "Войдите через Telegram"}</p></div><Settings size={20} className="accent" /></div>
-            <div className="setting-rows"><div><span><strong>Тема интерфейса</strong><small>{theme === "dark" ? "Тёмная" : "Светлая"}</small></span><Button size="small" variant="outline" onClick={toggleTheme}>{theme === "dark" ? <Sun size={15} /> : <Moon size={15} />} Сменить</Button></div>
-            <div><span><strong>Telegram-бот</strong><small>{data?.user?.linked ? "Чат подключён" : "Отправьте /start для уведомлений"}</small></span>{botUrl(data?.bot) && <a className="button button-outline button-small" href={botUrl(data?.bot)!} target="_blank" rel="noreferrer"><Send size={14} /> Открыть</a>}</div>
-            {data?.user && <div><label htmlFor="alerts"><strong>Уведомления и дневной отчёт</strong><small>Сигналы, исполнения и крупные комбо</small></label><input id="alerts" type="checkbox" checked={data.user.alerts} onChange={e => void mutate(() => api("settings", { alerts: e.target.checked }), "Настройки сохранены")} /></div>}
+          <Panel><div className="panel-head"><div><h2>Профиль и уведомления</h2><p>{data?.user ? data.user.name : "Войдите через Telegram"}</p></div></div>
+            <div className="setting-rows"><div><span><strong>Тема интерфейса</strong><small>{theme === "dark" ? "Тёмная" : "Светлая"}</small></span><Button size="small" variant="outline" onClick={toggleTheme}>{theme === "dark" ? <Sun size={15} aria-hidden="true" /> : <Moon size={15} aria-hidden="true" />} Сменить</Button></div>
+            <div><span><strong>Telegram-бот</strong><small>{data?.user?.linked ? "Чат подключён" : "Отправьте /start для уведомлений"}</small></span>{botUrl(data?.bot) && <a className="button button-outline button-small" href={botUrl(data?.bot)!} target="_blank" rel="noreferrer"><Send size={14} aria-hidden="true" /> Открыть</a>}</div>
+            {data?.user && <div><label htmlFor="alerts"><strong>Уведомления и дневной отчёт</strong><small>Сигналы, исполнения и крупные комбо</small></label><input id="alerts" type="checkbox" name="alerts" checked={data.user.alerts} onChange={e => void mutate(() => api("settings", { alerts: e.target.checked }), "Настройки сохранены")} /></div>}
             {data?.user && <Button variant="ghost" onClick={() => void mutate(() => api("auth/logout", {}), "Вы вышли из аккаунта")}>Выйти из аккаунта</Button>}</div></Panel>
-          <Panel><div className="panel-head"><div><h2>Мониторинг</h2><p>Здоровье источников и сборщика</p></div><Button aria-label="Обновить состояние" variant="ghost" size="icon" onClick={refresh}><RefreshCw size={17} /></Button></div>
-            <MarketHealth data={data} unavailable={offline} /><div className="setting-rows">{data?.errors.length ? data.errors.map(e => <div key={e.area}><span><strong>{e.area}</strong><small>{when(e.at)}</small></span><span className="tag amber">{e.count} / 24 ч</span></div>) : <p>Ошибок за 24 часа {data ? "в журнале нет." : "—"}</p>}</div></Panel>
+          <Panel><div className="panel-head"><div><h2>Мониторинг</h2><p>Здоровье источников и сборщика</p></div><Button aria-label="Обновить состояние" variant="ghost" size="icon" onClick={refresh}><RefreshCw size={17} aria-hidden="true" /></Button></div>
+            <MarketHealth data={data} unavailable={offline} />
+            <details className="collector-help"><summary>Как запустить сборщик бесплатно</summary>
+              <p>WebSocket передаёт изменения стакана Polymarket в реальном времени. Подписка на публичный поток бесплатна. Оставьте сборщик запущенным на своём компьютере, пока идёт тест.</p>
+              <a href="https://github.com/dimaqim/polytrader-lab/blob/main/docs/operations.md#websocket-сборщик" target="_blank" rel="noreferrer">Инструкция запуска <ArrowUpRight size={14} aria-hidden="true" /></a>
+            </details><div className="setting-rows">{data?.errors.length ? data.errors.map(e => <div key={e.area}><span><strong>{e.area}</strong><small>{when(e.at)}</small></span><span className="tag amber">{e.count} / 24 ч</span></div>) : <p>Ошибок за 24 часа {data ? "в журнале нет." : "—"}</p>}</div></Panel>
         </div>}
-        <footer className="footer"><span><FlaskConical size={14} /> PolyTrader Lab</span><span>{data ? "Обновлено " + clock(data.asOf) + " · Киев" : "Данные появляются после подключения"}</span></footer>
+        <footer className="footer">{data ? <span>Данные обновлены в <time dateTime={data.asOf}>{clock(data.asOf)}</time> · Киев</span> : "Данные Polymarket"}</footer>
       </main>
+      <nav className="mobile-nav" aria-label="Основные разделы">
+        {navigation.slice(0, 3).map(n => <a key={n.id} href={"#" + n.id} onClick={e => { e.preventDefault(); navigate(n.id); }}
+          aria-current={page === n.id ? "page" : undefined}><n.icon size={19} aria-hidden="true" />{n.title}</a>)}
+        <button type="button" aria-label="Открыть меню" aria-expanded={drawer} aria-haspopup="dialog" onClick={() => setDrawer(true)}>
+          <Menu size={19} aria-hidden="true" />Ещё
+        </button>
+      </nav>
     </div>
+    {drawer && <Modal title="Разделы" onClose={() => setDrawer(false)}><RouteLinks page={page} navigate={navigate} /></Modal>}
     {dialog && <Modal title={dialog === "auth" ? "Войти через Telegram" : "Новый тест"} onClose={() => { setDialog(null); setPair(null); setMessage(""); }}>
       {message && <p className="notice" role="status">{message}</p>}
       {dialog === "auth" ? <div className="auth-content"><p>Подтвердите вход в боте, чтобы открыть свои тесты в браузере.</p>
-        {pair ? <><a className="button button-primary" href={pair.url} target="_blank" rel="noreferrer"><Send size={17} /> Подтвердить в Telegram <ArrowUpRight size={16} /></a><p>Откройте чат, нажмите Start и вернитесь сюда. Код действует 10 минут.</p></>
-          : <Button disabled={busy} onClick={() => void mutate(async () => setPair(await api<Pair>("auth/pair", {})))}><Send size={17} /> {busy ? "Подключение…" : "Продолжить в Telegram"}</Button>}
+        {pair ? <><a className="button button-primary" href={pair.url} target="_blank" rel="noreferrer"><Send size={17} aria-hidden="true" /> Подтвердить в Telegram <ArrowUpRight size={16} aria-hidden="true" /></a><p>Откройте чат, нажмите Start и вернитесь сюда. Код действует 10 минут.</p></>
+          : <Button disabled={busy} onClick={() => void mutate(async () => setPair(await api<Pair>("auth/pair", {})))}><Send size={17} aria-hidden="true" /> {busy ? "Подключение…" : "Продолжить в Telegram"}</Button>}
       </div> : <StartForm strategy={selected} wallet={testWallet} wallets={data?.wallets ?? []} busy={busy} onSubmit={body => void mutate(async () => {
         await api("experiments", body); setDialog(null); navigate("strategies");
       }, "Тест запущен")} />}

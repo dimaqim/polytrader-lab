@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
-import { GeistSans } from "geist/font/sans";
-import { GeistMono } from "geist/font/mono";
+import "@fontsource-variable/source-sans-3";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
 import Script from "next/script";
 import "./globals.css";
 
@@ -10,7 +11,7 @@ export const metadata: Metadata = {
 };
 export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover" };
 export default function Layout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="ru" suppressHydrationWarning className={`${GeistSans.variable} ${GeistMono.variable}`}>
+  return <html lang="ru" suppressHydrationWarning>
     <body><Script src="https://telegram.org/js/telegram-web-app.js" strategy="beforeInteractive" />{children}</body>
   </html>;
 }
