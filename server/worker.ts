@@ -224,8 +224,11 @@ export async function runWorker(slot: number, daily = false) {
         from lab.users where alerts and chat_id is not null on conflict do nothing`;
     }
     await distributeSignals();
-    await sql`update lab.decisions d set status='unfilled',reason='expired',updated_at=now()
-      from lab.signals s,lab.experiments e where d.signal=s.id and d.experiment=e.id and d.status in ('queued','pending')
+    await sql`update lab.decisions d set status='unfilled',
+      reason=case when s.strategy in ('btc5','btc15') and d.status in ('queued','processing') then 'missing_collector_execution' else 'expired' end,
+      updated_at=now()
+      from lab.signals s,lab.experiments e where d.signal=s.id and d.experiment=e.id
+      and (d.status in ('queued','pending') or (s.strategy in ('btc5','btc15') and d.status='processing' and d.lease_at<now()-interval '45 seconds'))
       and least(s.expires_at,e.ends_at)<=now()`;
     for (let i = 0; i < 12; i++) if (!await executeDecision(undefined, "copy")) break;
     await sql`insert into lab.heartbeats(source,at,details) values('neon',now(),${JSON.stringify({ sections: health })})

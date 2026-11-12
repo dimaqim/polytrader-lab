@@ -13,7 +13,7 @@ const allowedNumber = (n: unknown, min: number, max: number): n is number =>
 
 async function dataFor(user: string | null) {
   const sql = database();
-  const [markets, wallets, combos, health, runs, trades, equity, errors, userRows] = await sql.transaction([
+  const [markets, wallets, combos, health, runs, trades, equity, errors, userRows, collectorWindows] = await sql.transaction([
     sql`select condition,slug,title,ends_at,interval_minutes,outcomes,prices,seen_at,fee from lab.markets
       where open and ends_at>now() and seen_at>now()-interval '5 minutes' order by ends_at limit 32`,
     sql`select w.address,w.name,w.source,w.public_pnl::float8,w.volume_shares::float8,w.history_complete,
@@ -58,8 +58,15 @@ async function dataFor(user: string | null) {
       ) points order by bucket limit 15000`,
     sql`select area,max(at) as at,count(*)::int as count from lab.logs where at>now()-interval '24 hours' group by area order by at desc limit 12`,
     sql`select name,alerts,chat_id is not null as linked from lab.users where id=${user}`,
+    sql`select strategy,
+      count(*) filter(where coalesce(evidence->>'windowObserved', 'true')='true'
+        and coalesce(reason,'') not in ('missing_collector_window','missing_catalog_window'))::int as observed,
+      count(*) filter(where evidence->>'windowObserved'='false'
+        or reason in ('missing_collector_window','missing_catalog_window'))::int as missed
+      from lab.signals where strategy in ('btc5','btc15') and observed_at>=now()-interval '24 hours'
+        and target_at<=now() group by strategy`,
   ]);
-  return { markets, wallets, combos, health, trades, equity, errors, user: userRows[0] ?? null,
+  return { markets, wallets, combos, health, trades, equity, errors, collectorWindows, user: userRows[0] ?? null,
     runs: runs.map(r => ({ ...r, winRate: r.settled ? r.wins / r.settled : null,
       interval95: wilson(r.wins, r.settled), weeklyInterval95: wilson(r.weekly_wins, r.weekly_settled), roi: r.pnl / r.bank })),
     bot: process.env.TELEGRAM_BOT_USERNAME || null, asOf: new Date().toISOString() };

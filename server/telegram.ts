@@ -102,10 +102,10 @@ export async function webhook(req: Request) {
             const rows = await sql`update lab.decisions d set status=${confirm ? "queued" : "skipped"},
               reason=${confirm ? null : "user_skipped"},ready_at=greatest(now(),d.ready_at),updated_at=now()
               from lab.experiments e,lab.signals s where d.id=${match[2]} and d.experiment=e.id and d.signal=s.id and e.user_id=${userId}
-              and d.status='pending' and e.ends_at>now() and s.expires_at>now() and not e.paused and not e.risk_blocked returning d.id`;
+              and d.status='pending' and e.ends_at>now() and s.expires_at>now() and not e.paused and not e.risk_blocked returning d.id,s.strategy`;
             if (rows.length) {
               answer = confirm ? "Подтверждено. Проверяю стакан." : "Сигнал пропущен";
-              if (confirm) acceptedId = rows[0].id;
+              if (confirm && rows[0].strategy !== "btc5" && rows[0].strategy !== "btc15") acceptedId = rows[0].id;
             } else answer = "Сигнал уже обработан или истёк";
           }
         }

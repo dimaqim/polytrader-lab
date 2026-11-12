@@ -43,42 +43,56 @@ export async function distributeSignals() {
     join lab.signals s on s.id=d.signal where d.status in ('pending','queued') and u.chat_id is not null and u.alerts
     on conflict do nothing`;
 }
-export async function claimDecision(id?: string, strategy?: Strategy) {
+type LiveBtcBook = {
+  get: (request: { token: string; session: string; readyAt: number; expiresAt: number }) => Promise<Book | undefined>;
+  isCurrent: (session: string) => boolean;
+};
+
+async function claimDecision(id?: string, strategy?: Strategy, collector = false) {
   const rows = await database()`with work as (
     select d.id from lab.decisions d join lab.signals s on s.id=d.signal
     where (${id ?? null}::uuid is null or d.id=${id ?? null}::uuid)
       and (${strategy ?? null}::text is null or s.strategy=${strategy ?? null})
+      and (s.strategy in ('btc5','btc15'))=${collector}
       and ((d.status='queued' and d.ready_at<=now()) or (d.status='processing' and d.lease_at<now()-interval '45 seconds'))
     order by d.ready_at limit 1 for update of d skip locked
   ), claimed as (
     update lab.decisions d set status='processing',lease_at=date_trunc('milliseconds',clock_timestamp()) from work where d.id=work.id returning d.*
-  ) select d.id,d.lease_at,s.id as signal_id,s.strategy,s.token,s.reference,s.expires_at,s.observed_at,
+  ) select d.id,d.lease_at,d.ready_at,s.id as signal_id,s.strategy,s.token,s.reference,s.expires_at,s.observed_at,
       m.fee,m.open,m.ends_at as market_ends,e.stake,e.slippage,s.evidence
       from claimed d join lab.signals s on s.id=d.signal join lab.experiments e on e.id=d.experiment
       left join lab.markets m on m.condition=s.condition`;
   return rows[0];
 }
-export async function executeDecision(id?: string, strategy?: Strategy, liveBook?: Book) {
-  const d = await claimDecision(id, strategy);
+export async function executeDecision(id?: string, strategy?: Strategy, live?: LiveBtcBook) {
+  const d = await claimDecision(id, strategy, !!live);
   if (!d) return false;
   let reason: string | null = null;
   let fill = null;
   let book: Book | undefined;
+  const btc = d.strategy === "btc5" || d.strategy === "btc15";
+  const session = d.evidence?.feedSession;
+  const fee = btc ? d.evidence?.fee : d.fee;
+  const expiresAt = Math.min(+new Date(d.expires_at), +new Date(d.market_ends));
+  const observedAt = +new Date(d.observed_at);
+  const readyAt = +new Date(d.ready_at);
   try {
-    const btc = d.strategy === "btc5" || d.strategy === "btc15";
-    const expires = +new Date(d.expires_at);
-    if (!d.open || Date.now() >= Math.min(expires, +new Date(d.market_ends))) reason = "expired_or_closed";
-    else if (!d.fee || !d.token || !(Number(d.reference) > 0)) reason = "missing_market_parameters";
+    if (!d.open || Date.now() >= expiresAt) reason = "expired_or_closed";
+    else if (!fee || !d.token || !(Number(d.reference) > 0)) reason = "missing_market_parameters";
     else {
-      const quote = btc && liveBook && liveBook.asset === d.token
-        ? { book: liveBook, minimum: Number(d.evidence?.minimum ?? 1) }
+      const quote = live
+        ? typeof session === "string" && live.isCurrent(session)
+          ? { book: await live.get({ token: d.token, session, readyAt, expiresAt }), minimum: Number(d.evidence?.minimum) }
+          : undefined
         : await orderBook(d.token);
       book = quote?.book;
-      const received = +new Date(d.observed_at);
-      if (!quote || !freshBook(quote.book, Date.now(), btc ? 4_000 : 15_000)
-        || quote.book.receivedAt < Math.max(received, +new Date(d.lease_at) - (btc ? 1_500 : 0))) reason = "missing_fresh_depth";
+      if (!book || !freshBook(book, Date.now(), btc ? 4_000 : 15_000)
+        || (btc && (book.source !== "ws" || book.asset !== d.token || book.receivedAt < readyAt))
+        || (!btc && book.receivedAt < Math.max(observedAt, +new Date(d.lease_at)))) {
+        reason = btc ? "missing_collector_execution" : "missing_fresh_depth";
+      } else if (!quote || !(quote.minimum > 0 && Number.isFinite(quote.minimum))) reason = "missing_market_parameters";
       else {
-        fill = marketBuy(quote.book, Number(d.stake), Number(d.reference), d.slippage, d.fee as Fee, quote.minimum);
+        fill = marketBuy(book, Number(d.stake), Number(d.reference), d.slippage, fee as Fee, quote.minimum);
         if (!fill) reason = "insufficient_liquidity_or_slippage";
       }
     }
@@ -88,7 +102,12 @@ export async function executeDecision(id?: string, strategy?: Strategy, liveBook
   }
   if (book) await database()`insert into lab.book_evidence(signal,stage,token,observed_at,book)
     values(${d.signal_id},'execution',${book.asset},${date(book.receivedAt)},${JSON.stringify(book)}) on conflict do nothing`;
-  const evidence = { bookAt: book?.sourceAt, receivedAt: book?.receivedAt, delayMs: book ? book.receivedAt - +new Date(d.observed_at) : null, fill };
+  if (live && fill && !live.isCurrent(session)) {
+    reason = "missing_collector_execution";
+    fill = null;
+  }
+  const evidence = { bookAt: book?.sourceAt, receivedAt: book?.receivedAt, readyAt: btc ? readyAt : undefined,
+    delayMs: book ? book.receivedAt - observedAt : null, fill };
   await database()`select lab.finish_decision(${d.id},${d.lease_at},${fill ? JSON.stringify(fill) : null},${reason},${JSON.stringify(evidence)})`;
   return true;
 }

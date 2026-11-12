@@ -16,12 +16,18 @@
     "bundle:neon": "node scripts/bundle-neon.mjs",
     "telegram:configure": "node --env-file-if-exists=.env.local scripts/configure-telegram.mjs",
     "db:migrate": "node --env-file-if-exists=.env.local scripts/migrate.mjs",
-    "db:verify": "node --env-file-if-exists=.env.local scripts/verify-db.mjs"
+    "db:verify": "node --env-file-if-exists=.env.local scripts/verify-db.mjs",
+    "collector:start": "node scripts/collector-control.mjs start",
+    "collector:stop": "node scripts/collector-control.mjs stop",
+    "collector:status": "node scripts/collector-control.mjs status",
+    "collector:launchd": "node scripts/collector-control.mjs launchd",
+    "collector:check": "node --env-file-if-exists=.env.local scripts/collector.ts --probe=600"
   },
   "dependencies": {
     "@fontsource-variable/source-sans-3": "^5.3.1",
     "@fontsource/ibm-plex-mono": "^5.3.0",
     "@neondatabase/serverless": "1.2.0",
+    "@types/ws": "8.18.2",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "lucide-react": "0.577.0",
@@ -29,7 +35,8 @@
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "recharts": "3.10.0",
-    "tailwind-merge": "3.7.0"
+    "tailwind-merge": "3.7.0",
+    "ws": "8.22.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.3.1",

@@ -20,7 +20,14 @@ export type WorkspaceData = {
     history_complete: boolean; records: number; buys: number; sells: number; redeems: number; first_at: string | null; last_at: string | null }[];
   combos: { id: string; name: string | null; wallet: string; stake: number; event_at: string; detected_at: string; author_pnl: number | null;
     payload: { status: string; legs: { leg_outcome_label: string; market: { title: string } }[] } }[];
-  health: { source: string; at: string; details: { sections?: boolean[]; connected?: boolean } }[];
+  health: { source: string; at: string; details: {
+    sections?: boolean[]; connected?: boolean;
+    status?: "connecting" | "reconnecting" | "syncing" | "connected" | "disconnected";
+    trackedMarkets?: number; readyMarkets?: number; lastQuoteAt?: string | null;
+    averageLatencyMs?: number | null; p95LatencyMs?: number | null; clockSkewMs?: number | null;
+    lastError?: { code: string; at: string }; catalogError?: { code: string; at: string };
+  } }[];
+  collectorWindows?: { strategy: "btc5" | "btc15"; observed: number; missed: number }[];
   errors: { area: string; count: number; at: string }[];
   user: { name: string; alerts: boolean; linked: boolean } | null;
   bot: string | null; asOf: string;

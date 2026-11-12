@@ -161,6 +161,7 @@ svg { flex-shrink: 0; }
 .health-list > div { display: grid; gap: 2px; padding: 13px 0; border-top: 1px solid var(--line); }
 .health-list dt { font-weight: 650; }
 .health-list dd { font-size: 14px; color: var(--secondary); }
+.collector-window-stat { display: block; }
 .health-list small { display: block; color: var(--muted); font-size: 13px; }
 .section-link, .panel-link, .collector-help a { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 650; color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
 .section-link { flex: none; min-height: 40px; }

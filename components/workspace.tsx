@@ -35,7 +35,8 @@ const errors: Record<string, string> = {
   service_unavailable: "Хранилище временно недоступно.",
 };
 const reasons: Record<string, string> = {
-  expired: "Срок истёк", missing_collector_window: "Пропущено окно сбора", missing_fresh_depth: "Нет свежего стакана",
+  expired: "Срок истёк", missing_collector_window: "Нет достоверных данных в момент сигнала",
+  missing_collector_execution: "Нет достоверных данных для исполнения", missing_fresh_depth: "Нет свежего стакана",
   insufficient_liquidity_or_slippage: "Мало ликвидности или превышено проскальзывание", source_sell_outside_v1: "Продажа вне правил v1",
   combo_rfq_depth_unavailable: "Нет публичной котировки RFQ", missing_market_parameters: "Нет параметров рынка",
   expired_or_closed: "Срок истёк или рынок закрыт", market_closed: "Рынок закрыт", risk_or_pause: "Пауза или лимит риска",
@@ -96,15 +97,61 @@ function Modal({ title, children, onClose }: { title: string; children: ReactNod
       <Button size="icon" variant="ghost" aria-label="Закрыть" onClick={onClose}><X size={19} aria-hidden="true" /></Button></div>{children}</div>
   </dialog>;
 }
-function collectorOnline(data: WorkspaceData | null) {
-  const collector = data?.health.find(h => h.source === "collector");
-  return !!collector?.details.connected && Date.now() - +new Date(collector.at) < 30_000;
+function collectorHeartbeat(data: WorkspaceData | null) {
+  return data?.health.find(h => h.source === "collector");
+}
+function collectorState(data: WorkspaceData | null) {
+  const collector = collectorHeartbeat(data);
+  if (!collector || Date.now() - +new Date(collector.at) >= 30_000) return "disconnected";
+  return collector.details.status ?? (collector.details.connected ? "connected" : "disconnected");
+}
+function collectorOnline(data: WorkspaceData | null) { return collectorState(data) === "connected"; }
+const collectorLabels = {
+  connected: "Подключён", disconnected: "Отключён", connecting: "Подключение",
+  reconnecting: "Переподключение", syncing: "Восстановление стакана",
+};
+const collectorErrors: Record<string, string> = {
+  handshake_timeout: "Сервер WebSocket не ответил на подключение",
+  ECONNRESET: "Сетевое соединение сброшено", ETIMEDOUT: "Таймаут сети",
+  ENOTFOUND: "Адрес сервера не найден", EHOSTUNREACH: "Сеть недоступна", ENETUNREACH: "Сеть недоступна",
+  pong_timeout: "Сервер не ответил на PING", frame_timeout: "Поток перестал присылать сообщения",
+  close_1006: "Соединение прервалось", book_out_of_sync: "Стакан разошёлся с котировками Polymarket",
+  out_of_order_quote: "Котировки пришли не по порядку", invalid_snapshot: "Некорректный снимок стакана",
+  catalog_db_unavailable: "Не удалось получить список раундов из Neon",
+  catalog_gamma_unavailable: "Список новых раундов Polymarket недоступен",
+  market_minimum_unavailable: "Не получен минимальный размер сделки для одного из раундов",
+};
+function CollectorDiagnostics({ data }: { data: WorkspaceData | null }) {
+  const heartbeat = collectorHeartbeat(data);
+  const details = heartbeat?.details;
+  const active = !!heartbeat && Date.now() - +new Date(heartbeat.at) < 30_000;
+  const latency = (value: number | null | undefined) => active && value != null ? `${value} мс` : "—";
+  const stamp = (value: string | null | undefined) => value ? when(value) : "—";
+  return <dl className="health-list">
+    <div><dt>Последняя котировка</dt><dd>{stamp(details?.lastQuoteAt)}</dd></div>
+    <div><dt>Отслеживаемые рынки</dt><dd>{active ? details?.trackedMarkets ?? "—" : "—"}
+      {active && details?.readyMarkets != null && <small>Со свежим стаканом: {details.readyMarkets}</small>}</dd></div>
+    <div><dt>Задержка получения котировок</dt><dd>Средняя {latency(details?.averageLatencyMs)} · P95 {latency(details?.p95LatencyMs)}
+      <small>За последние 5 минут</small></dd></div>
+    <div><dt>Окна сигналов за 24 часа</dt><dd>{(["btc5", "btc15"] as const).map(strategy => {
+      const windows = data?.collectorWindows?.find(w => w.strategy === strategy);
+      return <span key={strategy} className="collector-window-stat">{strategies[strategy].name}: {data?.collectorWindows
+        ? `${windows?.observed ?? 0} с данными, ${windows?.missed ?? 0} пропущено` : "—"}</span>;
+    })}</dd></div>
+    <div><dt>Последний heartbeat</dt><dd>{stamp(heartbeat?.at)}</dd></div>
+    {active && Math.abs(details?.clockSkewMs ?? 0) >= 1000 && <div><dt>Часы сборщика</dt>
+      <dd className="warning">Расхождение с Neon около {Math.abs(details!.clockSkewMs!)} мс. Проверьте синхронизацию времени.</dd></div>}
+    {[details?.lastError, details?.catalogError].filter(error => !!error).map(error => <div key={error.code}>
+      <dt>Последняя ошибка</dt><dd className="warning">{collectorErrors[error.code] ?? error.code}<small>{stamp(error.at)}</small></dd>
+    </div>)}
+  </dl>;
 }
 function MarketHealth({ data, unavailable }: { data: WorkspaceData | null; unavailable: boolean }) {
   const heartbeat = data?.health.find(h => h.source === "neon");
   const monitor = !!heartbeat && Date.now() - +new Date(heartbeat.at) < 180_000;
   const healthy = monitor && heartbeat.details.sections?.every(Boolean);
-  const collectorLive = collectorOnline(data);
+  const state = collectorState(data);
+  const collectorLive = state === "connected";
   return <dl className="health-list">
     <div><dt>Мониторинг рынков</dt><dd>
       <span className={healthy && !unavailable ? "positive" : ""}>
@@ -113,7 +160,7 @@ function MarketHealth({ data, unavailable }: { data: WorkspaceData | null; unava
       {heartbeat && <small>Обновление в {clock(heartbeat.at)}</small>}
     </dd></div>
     <div><dt>Стакан BTC в реальном времени</dt><dd>
-      <span className={collectorLive ? "positive" : "warning"}>{collectorLive ? "Подключён" : "Сборщик выключен"}</span>
+      <span className={collectorLive ? "positive" : "warning"}>{collectorLabels[state]}</span>
       <small>{collectorLive ? "Снимки доступны для сигналов BTC" : "Окна T−30 и T−60 могут быть пропущены"}</small>
     </dd></div>
   </dl>;
@@ -220,7 +267,7 @@ function RunTable({ runs, onPause, ranking, collectorActive }: {
       const ci = ranking ? run.weeklyInterval95 : run.interval95;
       const rate = ranking ? (run.weekly_settled ? run.weekly_wins / run.weekly_settled : null) : run.winRate;
       return <tr role="row" key={run.id}><td role="cell"><strong>{strategies[run.strategy].name}</strong><small>v{run.version} · {shortMode(run.mode)} · {dollars(run.bank)}</small>
-          {collectorActive === false && strategies[run.strategy].collector && status(run) === "Активен" && <small className="warning">Сборщик котировок выключен</small>}</td>
+          {collectorActive === false && strategies[run.strategy].collector && status(run) === "Активен" && <small className="warning">Нет достоверного потока котировок</small>}</td>
         <td role="cell" data-label="PnL" className="number">{dollars(ranking ? run.weekly_pnl : run.pnl)}</td><td role="cell" data-label="ROI" className="number">{percent(ranking ? run.weekly_pnl / run.bank : run.roi)}</td>
         <td role="cell" data-label="Доля прибыльных" className="number">{percent(rate)}<small>{ci ? percent(ci[0]) + " – " + percent(ci[1]) : "—"}</small></td>
         <td role="cell" data-label="Макс. просадка" className="number">{percent(run.drawdown)}</td><td role="cell" data-label="Сделки" className="number">{ranking ? run.weekly_settled : `${run.fills} / ${run.missed}`}</td>
@@ -399,7 +446,7 @@ export function Workspace() {
             </dl> : <p>{loading ? "Загружаю портфель…" : data?.user ? "Создайте тест, чтобы начать виртуальную торговлю." : "Войдите через Telegram, чтобы запустить свой первый тест."}</p>}
             {runs.some(r => strategies[r.strategy].collector && status(r) === "Активен") && !collectorOnline(data) &&
               <a className="summary-status" href="#settings" onClick={e => { e.preventDefault(); navigate("settings"); }}>
-                Сборщик котировок выключен <ArrowRight size={14} aria-hidden="true" />
+                Нет достоверного потока котировок <ArrowRight size={14} aria-hidden="true" />
               </a>}
           </section>
           <div className="overview-grid">
@@ -430,6 +477,9 @@ export function Workspace() {
             <ul className="strategy-list">{strategyIds.map(id => (
               <li key={id}><div><h3>{strategies[id].name}</h3><p>{strategies[id].description}</p>
                 <small>v{strategies[id].version}{strategies[id].collector ? " · Нужен сборщик котировок" : ""}</small>
+                {strategies[id].collector && !collectorOnline(data) && <small className="collector-window-stat warning">
+                  Нет достоверного потока котировок
+                </small>}
               </div><Button variant="outline" size="small" onClick={() => openStart(id)} aria-label={`Тестировать: ${strategies[id].name}`}>
                 Тестировать <ArrowRight size={14} aria-hidden="true" />
               </Button></li>
@@ -473,8 +523,9 @@ export function Workspace() {
             <div><span><strong>Telegram-бот</strong><small>{data?.user?.linked ? "Чат подключён" : "Отправьте /start для уведомлений"}</small></span>{botUrl(data?.bot) && <a className="button button-outline button-small" href={botUrl(data?.bot)!} target="_blank" rel="noreferrer"><Send size={14} aria-hidden="true" /> Открыть</a>}</div>
             {data?.user && <div><label htmlFor="alerts"><strong>Уведомления и дневной отчёт</strong><small>Сигналы, исполнения и крупные комбо</small></label><input id="alerts" type="checkbox" name="alerts" checked={data.user.alerts} onChange={e => void mutate(() => api("settings", { alerts: e.target.checked }), "Настройки сохранены")} /></div>}
             {data?.user && <Button variant="ghost" onClick={() => void mutate(() => api("auth/logout", {}), "Вы вышли из аккаунта")}>Выйти из аккаунта</Button>}</div></Panel>
-          <Panel><div className="panel-head"><div><h2>Мониторинг</h2><p>Здоровье источников и сборщика</p></div><Button aria-label="Обновить состояние" variant="ghost" size="icon" onClick={refresh}><RefreshCw size={17} aria-hidden="true" /></Button></div>
+          <Panel><div className="panel-head"><div><h2>Состояние системы</h2><p>Мониторинг рынков и сборщика</p></div><Button aria-label="Обновить состояние" variant="ghost" size="icon" onClick={refresh}><RefreshCw size={17} aria-hidden="true" /></Button></div>
             <MarketHealth data={data} unavailable={offline} />
+            <CollectorDiagnostics data={data} />
             <details className="collector-help"><summary>Как запустить сборщик бесплатно</summary>
               <p>WebSocket передаёт изменения стакана Polymarket в реальном времени. Подписка на публичный поток бесплатна. Оставьте сборщик запущенным на своём компьютере, пока идёт тест.</p>
               <a href="https://github.com/dimaqim/polytrader-lab/blob/main/docs/operations.md#websocket-сборщик" target="_blank" rel="noreferrer">Инструкция запуска <ArrowUpRight size={14} aria-hidden="true" /></a>
