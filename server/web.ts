@@ -26,7 +26,7 @@ async function dataFor(user: string | null) {
     sql`select c.id,c.wallet,c.stake::float8,c.event_at,c.detected_at,c.payload,w.name,
       coalesce(w.public_pnl::float8,null) as author_pnl from lab.combos c left join lab.wallets w on w.address=c.wallet
       order by detected_at desc limit 60`,
-    sql`select source,at,details from lab.heartbeats`,
+    sql`select source,at,details from lab.heartbeats where source in ('neon','collector','polymarket','telegram')`,
     sql`select e.id,e.strategy,e.version,e.mode,e.rules,e.bank::float8,e.cash::float8,e.stake::float8,e.starts_at,e.ends_at,e.paused,e.risk_blocked,
       e.worst_drawdown::float8 as drawdown,e.wallet, coalesce(s.fills,0) as fills,coalesce(s.settled,0) as settled,
       coalesce(s.wins,0) as wins,coalesce(s.pnl,0) as pnl,coalesce(s.fees,0) as fees,s.slippage,q.value::float8 as equity,
@@ -46,9 +46,15 @@ async function dataFor(user: string | null) {
     sql`select d.id,d.status,d.reason,d.updated_at,s.strategy,s.label,s.observed_at,s.target_at,
       jsonb_build_object('timingErrorMs',s.evidence->'timingErrorMs','detectionDelayMs',s.evidence->'detectionDelayMs',
         'modeledShares',s.evidence->'modeledShares','modeledSpread',s.evidence->'modeledSpread') as evidence,
-      d.execution,p.shares::float8,p.price::float8,p.cost::float8,p.fee::float8,p.pnl::float8,p.settled_at,e.mode,e.version
+      d.execution,p.shares::float8,p.price::float8,p.cost::float8,p.fee::float8,p.pnl::float8,p.settled_at,p.opened_at,p.slippage::float8,m.slug,q.outcome,
+      (p.shares*q.mark-p.cost)::float8 as unrealized_pnl,e.mode,e.version
       from lab.decisions d join lab.signals s on s.id=d.signal join lab.experiments e on e.id=d.experiment
-      left join lab.positions p on p.decision=d.id where e.user_id=${user} order by s.observed_at desc,d.id desc limit 5`,
+      left join lab.positions p on p.decision=d.id left join lab.markets m on m.condition=s.condition
+      left join lateral (select m.outcomes->>(t.ord::int-1) as outcome,
+        case when p.settled_at is null and m.open and m.ends_at>now() and m.seen_at>now()-interval '3 minutes'
+          then (m.prices->>(t.ord::int-1))::numeric end as mark
+        from jsonb_array_elements_text(m.tokens) with ordinality t(token,ord) where t.token=s.token) q on true
+      where e.user_id=${user} order by s.observed_at desc,d.id desc limit 5`,
     sql`select experiment,bucket as at,value::float8 from (
       select distinct on (q.experiment,date_trunc('hour',q.at))
         q.experiment,date_trunc('hour',q.at) bucket,q.value
@@ -110,9 +116,15 @@ async function historyFor(user: string, url: URL) {
   const rows = await database()`select d.id,d.status,d.reason,d.updated_at,s.strategy,s.label,s.observed_at,s.target_at,
       jsonb_build_object('timingErrorMs',s.evidence->'timingErrorMs','detectionDelayMs',s.evidence->'detectionDelayMs',
         'modeledShares',s.evidence->'modeledShares','modeledSpread',s.evidence->'modeledSpread') as evidence,
-    d.execution,p.shares::float8,p.price::float8,p.cost::float8,p.fee::float8,p.pnl::float8,p.settled_at,e.mode,e.version
+    d.execution,p.shares::float8,p.price::float8,p.cost::float8,p.fee::float8,p.pnl::float8,p.settled_at,p.opened_at,p.slippage::float8,m.slug,q.outcome,
+      (p.shares*q.mark-p.cost)::float8 as unrealized_pnl,e.mode,e.version
     from lab.decisions d join lab.signals s on s.id=d.signal join lab.experiments e on e.id=d.experiment
-    left join lab.positions p on p.decision=d.id where e.user_id=${user} and (${filter}='all' or d.status=${filter})
+    left join lab.positions p on p.decision=d.id left join lab.markets m on m.condition=s.condition
+      left join lateral (select m.outcomes->>(t.ord::int-1) as outcome,
+        case when p.settled_at is null and m.open and m.ends_at>now() and m.seen_at>now()-interval '3 minutes'
+          then (m.prices->>(t.ord::int-1))::numeric end as mark
+        from jsonb_array_elements_text(m.tokens) with ordinality t(token,ord) where t.token=s.token) q on true
+      where e.user_id=${user} and (${filter}='all' or d.status=${filter})
     and (${time ?? null}::timestamptz is null or (s.observed_at,d.id)<(${time ?? null}::timestamptz,${id ?? null}::uuid))
     order by s.observed_at desc,d.id desc limit 51`;
   const visible = rows.slice(0,50);

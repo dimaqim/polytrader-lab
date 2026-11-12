@@ -7,6 +7,7 @@ import { distributeSignals, executeDecision, recordSignal, upsertMarket } from "
 import { btcRule } from "../lib/strategies.ts";
 import { freshBook, makerProgress } from "../lib/simulator.ts";
 import { btcObservation, maxBtcBookAgeMs } from "../lib/collector-window.ts";
+import { deliverNotifications } from "../server/telegram.ts";
 import { MarketFeed } from "../lib/market-feed.ts";
 
 type MakerQuote = { token: string; at: number; bid: number; ask: number; bidQueue: number; askQueue: number; session: string };
@@ -45,7 +46,7 @@ let executionRunning = false;
 let catalogError: Fault | undefined;
 let clockSkewMs: number | null = null;
 let lastLogged: Fault | undefined;
-const totals = { connections: 0, subscriptions: 0, unsubscriptions: 0, quotes: 0, trades: 0, ignored: 0, observed: 0, missed: 0 };
+const totals = { connections: 0, subscriptions: 0, unsubscriptions: 0, snapshots: 0, updates: 0, quotes: 0, trades: 0, ignored: 0, observed: 0, missed: 0 };
 
 function report(event: string, detail: object = {}) {
   console.log(JSON.stringify({ at: new Date().toISOString(), event, ...detail }));
@@ -110,6 +111,9 @@ function connect() {
   const c: Connection = { socket, feed: new MarketFeed(), session: randomUUID(), subscribed: new Set(), initialized: false,
     openedAt: 0, lastFrameAt: 0, lastPongAt: 0, nextPingAt: 0, pingSentAt: 0, steady: false };
   connection = c;
+  socket.on("upgrade", response => {
+    if (connection === c) report("websocket_upgrade", { httpStatus: response.statusCode });
+  });
   socket.on("open", () => {
     if (connection !== c) return;
     const now = Date.now();
@@ -135,6 +139,11 @@ function connect() {
     checkWindows(at);
     const result = c.feed.ingest(data, at);
     if (result.fault) { abortConnection(c, result.fault); return; }
+    if (result.snapshots && totals.snapshots === 0) report("first_book", { snapshots: result.snapshots });
+    const updates = result.quotes.length - result.snapshots;
+    if (updates && totals.updates === 0) report("first_quote_update", { updates });
+    totals.snapshots += result.snapshots;
+    totals.updates += updates;
     totals.quotes += result.quotes.length;
     totals.trades += result.trades.length;
     totals.ignored += result.ignored;
@@ -234,12 +243,15 @@ function watchBtc(market: Market, observedAt: number) {
       minimum, minimumObservedAt: marketMinimum?.at, clockSkewMs, books: result.books, source: "ws", threshold: rule.threshold, feedSession: c?.session, fee,
       bestBid: selection?.book.bids[0], bestAsk: selection?.book.asks[0], availableShares: selection?.book.asks.reduce((sum, level) => sum + level.size, 0) } };
   schedule("btc_signal", async () => {
+    let signalId: string | undefined;
     for (let attempt = 0; ; attempt++) {
-      try { await recordSignal(signal); break; }
+      try { signalId = await recordSignal(signal); break; }
       catch (error) { if (attempt === 2) throw error; await sleep(250 * 2 ** attempt); }
     }
+    if (!signalId) return;
     if (!reason) drainUntil = Math.max(drainUntil, signal.expiresAt);
-    await distributeSignals();
+    await distributeSignals(signalId);
+    if (!reason) await deliverNotifications(signalId);
   });
 }
 
@@ -319,9 +331,10 @@ function heartbeatDetails(now: number) {
   const status = stopping ? "disconnected" : ready > 0 && Math.abs(clockSkewMs ?? 0) < 1_000 ? "connected" : c?.socket.readyState === WebSocket.OPEN ? "syncing"
     : lastError ? "reconnecting" : "connecting";
   const recent = latency.filter(sample => now - sample.at <= 300_000).map(sample => sample.ms).sort((a, b) => a - b);
-  return { connected: status === "connected", status, trackedMarkets: tracked.length, readyMarkets: ready,
+  return { connected: status === "connected", socketOpen: !stopping && c?.socket.readyState === WebSocket.OPEN, status, trackedMarkets: tracked.length, readyMarkets: ready,
     lastQuoteAt: lastQuoteAt ? new Date(lastQuoteAt).toISOString() : null,
     averageLatencyMs: recent.length ? Math.round(recent.reduce((a, b) => a + b, 0) / recent.length) : null,
+    p50LatencyMs: recent.length ? recent[Math.ceil(recent.length * .5) - 1] : null,
     p95LatencyMs: recent.length ? recent[Math.ceil(recent.length * .95) - 1] : null, latencySamples: recent.length,
     clockSkewMs, lastError, catalogError, totals };
 }
@@ -395,7 +408,7 @@ async function stop(exitCode?: number) {
 }
 process.once("SIGINT", () => void stop());
 process.once("SIGTERM", () => void stop());
-if (probe) timers.push(setTimeout(() => void stop(totals.quotes > 0 ? 0 : 1), seconds * 1000));
+if (probe) timers.push(setTimeout(() => void stop(totals.snapshots > 0 && totals.updates > 0 ? 0 : 1), seconds * 1000));
 refreshCatalog();
 heartbeat();
 report("started", { probe, pid: process.pid });

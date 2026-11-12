@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import { database, date, log } from "./db.ts";
-import { marketBySlug, marketByCondition, page, type Activity, type Page, type ComboPosition, type Leader } from "./polymarket.ts";
+import { marketBySlug, marketByCondition, page, request, type Activity, type Page, type ComboPosition, type Leader } from "./polymarket.ts";
 import { btcRule, walletPattern } from "../lib/strategies.ts";
 import { distributeSignals, executeDecision, recordSignal, upsertMarket } from "./signals.ts";
-import { deliverNotifications } from "./telegram.ts";
+import { deliverNotifications, telegram } from "./telegram.ts";
+import { strategies, type Strategy } from "../lib/strategies.ts";
+import { tradingReports } from "./reporting.ts";
 
 const minute = 60_000;
 const activityId = (a: Activity) => String(a.id ?? a.sequence_id ?? createHash("sha256").update(JSON.stringify([
@@ -170,6 +172,50 @@ async function settleAndMark() {
     from inserted i where i.experiment=e.id`;
 }
 
+async function checkServices(gamma: boolean) {
+  const [clob, data, bot] = await Promise.all([
+    protect("health_clob", () => request("https://clob.polymarket.com/time", fetch, 1)),
+    protect("health_data", () => page<Leader>("/leaderboard", { category: "crypto", time_period: "week", limit: "1" })),
+    protect("health_telegram", () => telegram("getMe", {})),
+  ]);
+  const sql = database();
+  await sql`insert into lab.heartbeats(source,at,details) values
+    ('polymarket',now(),${JSON.stringify({ gamma, clob, data })}),
+    ('telegram',now(),${JSON.stringify({ bot })})
+    on conflict(source) do update set at=excluded.at,details=excluded.details`;
+}
+
+async function experimentNotifications(slot: number) {
+  const sql = database();
+  const rows = await sql`select e.id,e.strategy,e.mode,u.chat_id, coalesce(sum(p.pnl),0)::float8 as pnl,
+      count(p.id) filter(where p.settled_at is null)::int as open
+    from lab.experiments e join lab.users u on u.id=e.user_id left join lab.positions p on p.experiment=e.id
+    where e.ends_at<=now() and e.ends_at>now()-interval '24 hours' and u.alerts and u.chat_id is not null
+      and not exists(select 1 from lab.outbox o where o.key='completed:'||e.id)
+    group by e.id,u.chat_id`;
+  for (const e of rows) {
+    const message = `Тест завершён · ${strategies[e.strategy as Strategy].name} · ${e.mode === "auto" ? "Авто" : "Подтверждение"}\nРеализованный PnL: $${e.pnl.toFixed(2)}`
+      + (e.open ? `\nОжидают расчёта: ${e.open}` : "");
+    await sql`insert into lab.outbox(key,chat_id,payload) values(${"completed:" + e.id},${e.chat_id},${JSON.stringify({ text: message })})
+      on conflict do nothing`;
+  }
+  await sql`with outage as (
+    select not exists(select 1 from lab.heartbeats where source='collector' and at>now()-interval '90 seconds'
+      and details->>'connected'='true') as active
+  ), changed as (
+    insert into lab.heartbeats(source,at,details)
+    select 'collector_notice',now(),jsonb_build_object('active',active) from outage
+    on conflict(source) do update set at=excluded.at,details=excluded.details
+      where lab.heartbeats.details is distinct from excluded.details
+    returning details
+  ) insert into lab.outbox(key,chat_id,payload)
+  select 'collector:offline:'||u.id||':'||${date(slot)},u.chat_id,jsonb_build_object('text',
+    'PolyTrader Lab · Нет достоверных котировок WebSocket. Новые BTC-сигналы без подтверждённого стакана пропускаются.')
+  from changed,lab.users u where details->>'active'='true' and u.alerts and u.chat_id is not null and exists(
+    select 1 from lab.experiments e where e.user_id=u.id and e.strategy in ('btc5','btc15','maker')
+    and e.ends_at>now() and not e.paused and not e.risk_blocked) on conflict do nothing`;
+}
+
 export async function runWorker(slot: number, daily = false) {
   const sql = database();
   const job = daily ? "daily" : "monitor";
@@ -179,13 +225,11 @@ export async function runWorker(slot: number, daily = false) {
   if (!slots.length) return;
   if (daily) {
     await protect("wallet_discovery", discoverWallets);
-    await sql`insert into lab.outbox(key,chat_id,payload)
-      select 'daily:'||u.id||':'||${date(slot)},u.chat_id,jsonb_build_object('text',
-        'PolyTrader Lab · Дневной отчёт'||E'\n'||'Активных тестов: '||
-        (select count(*) from lab.experiments e where e.user_id=u.id and not e.paused and e.ends_at>now())||
-        E'\n'||'Рассчитанный PnL за 24 ч: $'||coalesce((select round(sum(p.pnl),2) from lab.positions p
-        join lab.experiments e on e.id=p.experiment where e.user_id=u.id and p.settled_at>now()-interval '24 hours'),0))
-      from lab.users u where u.alerts and u.chat_id is not null on conflict do nothing`;
+    for (const report of await tradingReports(null, "daily")) {
+      await sql`insert into lab.outbox(key,chat_id,payload)
+        values(${"daily:" + report.id + ":" + date(slot)},${report.chat},${JSON.stringify({ text: report.message })})
+        on conflict do nothing`;
+    }
   } else {
     const now = Date.now();
     const jobs = [
@@ -223,6 +267,8 @@ export async function runWorker(slot: number, daily = false) {
           'PolyTrader Lab · Ошибка мониторинга. Состояние источников доступно в настройках Mini App.')
         from lab.users where alerts and chat_id is not null on conflict do nothing`;
     }
+    if (Math.floor(slot / minute) % 5 === 0) await protect("service_health", () => checkServices(health[0]));
+    await protect("experiment_notifications", () => experimentNotifications(slot));
     await distributeSignals();
     await sql`update lab.decisions d set status='unfilled',
       reason=case when s.strategy in ('btc5','btc15') and d.status in ('queued','processing') then 'missing_collector_execution' else 'expired' end,

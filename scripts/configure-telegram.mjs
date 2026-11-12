@@ -1,3 +1,5 @@
+import { commands } from "../lib/telegram-commands.mjs";
+
 const { TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, APP_URL } = process.env;
 const webhookBase = process.argv[2];
 if (![TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, APP_URL, webhookBase].every(Boolean)) {
@@ -17,9 +19,11 @@ const bot = await call("getMe");
 await call("setWebhook", { url: new URL("/telegram", webhookBase).href, secret_token: TELEGRAM_WEBHOOK_SECRET,
   allowed_updates: ["message", "callback_query"], max_connections: 8 });
 await call("setChatMenuButton", { menu_button: { type: "web_app", text: "Открыть Mini App", web_app: { url: APP_URL } } });
-await call("setMyCommands", { commands: [
-  { command: "start", description: "Открыть PolyTrader Lab" }, { command: "stats", description: "Статистика" },
-  { command: "pause", description: "Пауза всех тестов" }, { command: "help", description: "Помощь" },
-] });
-const info = await call("getWebhookInfo");
-console.log(JSON.stringify({ bot: bot.username, webhook: info.url, pending: info.pending_update_count }));
+await call("setMyCommands", { commands });
+const [info, registered, menu] = await Promise.all([call("getWebhookInfo"), call("getMyCommands"), call("getChatMenuButton")]);
+if (info.url !== new URL("/telegram", webhookBase).href || menu.web_app?.url !== new URL(APP_URL).href
+  || registered.map(c => c.command).join(",") !== commands.map(c => c.command).join(",")) {
+  throw new Error("Telegram configuration verification failed");
+}
+console.log(JSON.stringify({ bot: bot.username, webhook: info.url, pending: info.pending_update_count,
+  commands: registered.map(c => c.command), miniApp: menu.web_app.url }));

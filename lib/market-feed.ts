@@ -3,7 +3,7 @@ import type { Book, Level, MakerPrint } from "./simulator.ts";
 type Packet = Record<string, unknown>;
 type Trade = MakerPrint & { sourceAt: number; transactionHash?: string; feeRateBps?: number };
 type Cursor = { at: number; keys: Set<string> };
-type Result = { quotes: Book[]; trades: Trade[]; fault?: string; ignored: number };
+type Result = { quotes: Book[]; trades: Trade[]; fault?: string; ignored: number; snapshots: number };
 
 function object(value: unknown): Packet | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Packet : null;
@@ -62,7 +62,7 @@ export class MarketFeed {
   trades(asset: string, after: number) { return (this.prints.get(asset) ?? []).filter(t => t.receivedAt > after); }
 
   ingest(raw: string, receivedAt: number): Result {
-    const result: Result = { quotes: [], trades: [], ignored: 0 };
+    const result: Result = { quotes: [], trades: [], ignored: 0, snapshots: 0 };
     let decoded: unknown;
     try { decoded = JSON.parse(raw); } catch { return { ...result, fault: "invalid_json" }; }
     for (const value of Array.isArray(decoded) ? decoded : [decoded]) {
@@ -145,6 +145,7 @@ export class MarketFeed {
       const book: Book = { asset, bids, asks, sourceAt: at, receivedAt, source: "ws" };
       this.books.set(asset, book);
       result.quotes.push(book);
+      result.snapshots++;
       return;
     }
 

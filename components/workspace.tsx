@@ -46,8 +46,8 @@ const reasons: Record<string, string> = {
   maker_no_trade_through: "Нет подтверждённого прохода цены", maker_continuity_gap: "Разрыв в потоке стакана",
 };
 const statuses: Record<string, string> = {
-  filled: "Исполнено", partial: "Частично", unfilled: "Не исполнено", pending: "Ожидает", processing: "Проверяется",
-  queued: "В очереди", skipped: "Пропущено",
+  filled: "Исполнено виртуально", partial: "Частичное исполнение", unfilled: "Не исполнено", pending: "Ожидает подтверждения", processing: "Проверяется",
+  queued: "Сигнал", skipped: "Пропущено",
 };
 const dollars = (n: number | null | undefined) => n == null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(n);
 const percent = (n: number | null | undefined) => n == null ? "—" : `${(n * 100).toFixed(1)}%`;
@@ -128,10 +128,13 @@ function CollectorDiagnostics({ data }: { data: WorkspaceData | null }) {
   const latency = (value: number | null | undefined) => active && value != null ? `${value} мс` : "—";
   const stamp = (value: string | null | undefined) => value ? when(value) : "—";
   return <dl className="health-list">
+    <div><dt>Процесс сборщика</dt><dd>{active && details?.status !== "disconnected" ? "Запущен" : "Нет свежего heartbeat"}</dd></div>
+    <div><dt>WebSocket</dt><dd>{active && (details?.socketOpen ?? (details?.status === "syncing" || details?.status === "connected"))
+      ? "Открыт" : "Нет подключения"}</dd></div>
     <div><dt>Последняя котировка</dt><dd>{stamp(details?.lastQuoteAt)}</dd></div>
     <div><dt>Отслеживаемые рынки</dt><dd>{active ? details?.trackedMarkets ?? "—" : "—"}
       {active && details?.readyMarkets != null && <small>Со свежим стаканом: {details.readyMarkets}</small>}</dd></div>
-    <div><dt>Задержка получения котировок</dt><dd>Средняя {latency(details?.averageLatencyMs)} · P95 {latency(details?.p95LatencyMs)}
+    <div><dt>Задержка получения котировок</dt><dd>P50 {latency(details?.p50LatencyMs)} · P95 {latency(details?.p95LatencyMs)}
       <small>За последние 5 минут</small></dd></div>
     <div><dt>Окна сигналов за 24 часа</dt><dd>{(["btc5", "btc15"] as const).map(strategy => {
       const windows = data?.collectorWindows?.find(w => w.strategy === strategy);
@@ -146,13 +149,29 @@ function CollectorDiagnostics({ data }: { data: WorkspaceData | null }) {
     </div>)}
   </dl>;
 }
-function MarketHealth({ data, unavailable }: { data: WorkspaceData | null; unavailable: boolean }) {
+function MarketHealth({ data, unavailable, diagnostics = false }: {
+  data: WorkspaceData | null; unavailable: boolean; diagnostics?: boolean;
+}) {
   const heartbeat = data?.health.find(h => h.source === "neon");
   const monitor = !!heartbeat && Date.now() - +new Date(heartbeat.at) < 180_000;
   const healthy = monitor && heartbeat.details.sections?.every(Boolean);
   const state = collectorState(data);
   const collectorLive = state === "connected";
+  const recent = (source: string) => {
+    const item = data?.health.find(h => h.source === source);
+    return !unavailable && item && Date.now() - +new Date(item.at) < 600_000 ? item.details : undefined;
+  };
+  const polymarket = diagnostics ? recent("polymarket") : undefined;
+  const bot = diagnostics ? recent("telegram")?.bot : undefined;
+  const service = (ok: boolean | undefined) => ok == null ? "Нет свежей проверки" : ok ? "Доступен" : "Нет связи";
   return <dl className="health-list">
+    {diagnostics && <>
+      <div><dt>Neon PostgreSQL</dt><dd>{unavailable ? "Нет связи" : data ? "Доступен" : "Проверка…"}</dd></div>
+      <div><dt>Polymarket Gamma</dt><dd>{service(polymarket?.gamma)}</dd></div>
+      <div><dt>Polymarket Data</dt><dd>{service(polymarket?.data)}</dd></div>
+      <div><dt>Polymarket CLOB</dt><dd>{service(polymarket?.clob)}</dd></div>
+      <div><dt>Telegram Bot API</dt><dd>{service(bot)}</dd></div>
+    </>}
     <div><dt>Мониторинг рынков</dt><dd>
       <span className={healthy && !unavailable ? "positive" : ""}>
         {unavailable ? "Нет связи" : healthy ? "Работает" : monitor ? "Есть ошибки" : "Нет свежего запуска"}
@@ -161,7 +180,7 @@ function MarketHealth({ data, unavailable }: { data: WorkspaceData | null; unava
     </dd></div>
     <div><dt>Стакан BTC в реальном времени</dt><dd>
       <span className={collectorLive ? "positive" : "warning"}>{collectorLabels[state]}</span>
-      <small>{collectorLive ? "Снимки доступны для сигналов BTC" : "Окна T−30 и T−60 могут быть пропущены"}</small>
+      <small>{collectorLive ? "Свежий стакан доступен для BTC" : "Нет достоверных данных"}</small>
     </dd></div>
   </dl>;
 }
@@ -187,11 +206,42 @@ function MarketTable({ markets, loading, filtered = false }: {
 }
 function Trades({ rows, details = false }: { rows: Trade[]; details?: boolean }) {
   if (!rows.length) return <Empty title="Сигналов пока нет" text="Журнал пополнится после первого решения по сигналу." />;
-  return <div className="table-wrap"><table role="table"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Сигнал / рынок</th><th scope="col" role="columnheader">Режим</th><th scope="col" role="columnheader">Статус</th><th scope="col" role="columnheader">Цена</th>{details && <><th scope="col" role="columnheader">Объём</th><th scope="col" role="columnheader">Комиссия</th><th scope="col" role="columnheader">Задержка исполнения</th></>}<th scope="col" role="columnheader">PnL</th><th scope="col" role="columnheader">Время · Киев</th></tr></thead>
-    <tbody role="rowgroup">{rows.map(row => <tr role="row" key={row.id}><td role="cell"><strong>{row.label}</strong><small>{strategies[row.strategy].name}{row.reason ? " · " + (reasons[row.reason] ?? row.reason) : ""}</small>{row.evidence?.modeledShares ? <small>Парный объём {row.evidence.modeledShares.toFixed(2)} · оценка спреда {dollars(row.evidence.modeledSpread)}</small> : null}</td>
-      <td role="cell" data-label="Режим">{shortMode(row.mode)}</td><td role="cell" data-label="Статус"><span className={"tag " + (row.status === "filled" || row.status === "partial" ? "good" : row.status === "pending" ? "amber" : "muted")}>{statuses[row.status] ?? row.status}</span></td>
-      <td role="cell" data-label="Цена" className="number">{price(row.price)}</td>{details && <><td role="cell" data-label="Объём" className="number">{row.shares == null ? "—" : row.shares.toFixed(2)}</td><td role="cell" data-label="Комиссия" className="number">{dollars(row.fee)}</td><td role="cell" data-label="Задержка" className="number">{row.execution?.delayMs == null ? "—" : Math.round(row.execution.delayMs) + " мс"}</td></>}<td role="cell" data-label="PnL" className={"number " + (row.pnl != null && row.pnl >= 0 ? "positive" : row.pnl != null ? "negative" : "")}>{dollars(row.pnl)}</td>
-      <td role="cell" data-label="Время · Киев" className="number nowrap">{when(row.observed_at)}</td></tr>)}</tbody></table></div>;
+  return <div className="table-wrap"><table role="table"><thead role="rowgroup"><tr role="row">
+    <th scope="col" role="columnheader">Сигнал / рынок</th><th scope="col" role="columnheader">Режим</th>
+    <th scope="col" role="columnheader">Статус</th><th scope="col" role="columnheader">Цена</th>
+    {details && <><th scope="col" role="columnheader">Контракты</th><th scope="col" role="columnheader">Комиссия</th>
+      <th scope="col" role="columnheader">Проскальзывание</th></>}
+    <th scope="col" role="columnheader">PnL</th><th scope="col" role="columnheader">Время · Киев</th>
+  </tr></thead><tbody role="rowgroup">{rows.map(row => {
+    const missing = row.reason?.startsWith("missing_") || row.reason === "quote_api_error";
+    const pnl = row.settled_at ? row.pnl : row.unrealized_pnl;
+    const tradeStatus = row.settled_at ? row.pnl === 0 ? "Без прибыли и убытка" : (row.pnl ?? 0) > 0 ? "Выигрыш" : "Проигрыш"
+      : row.opened_at ? "Открытая позиция" : missing ? "Нет достоверных данных" : statuses[row.status] ?? row.status;
+    const tone = row.opened_at ? "good" : row.status === "pending" ? "amber" : "muted";
+    return <tr role="row" key={row.id}>
+      <td role="cell">
+        {row.slug ? <a href={`https://polymarket.com/event/${encodeURIComponent(row.slug)}`} target="_blank" rel="noreferrer">
+          <strong>{row.label}</strong> <ArrowUpRight size={13} aria-hidden="true" /></a> : <strong>{row.label}</strong>}
+        <small>{strategies[row.strategy].name}{row.outcome ? " · " + row.outcome.toUpperCase() : ""}</small>
+        {row.reason && <small>{reasons[row.reason] ?? row.reason}</small>}
+        {row.evidence?.modeledShares ? <small>Парный объём {row.evidence.modeledShares.toFixed(2)} · оценка спреда {dollars(row.evidence.modeledSpread)}</small> : null}
+      </td>
+      <td role="cell" data-label="Режим">{shortMode(row.mode)}</td>
+      <td role="cell" data-label="Статус"><span className={"tag " + tone}>{tradeStatus}</span>
+        {row.opened_at && <small>{statuses[row.status]}</small>}</td>
+      <td role="cell" data-label="Цена" className="number">{price(row.price)}</td>
+      {details && <>
+        <td role="cell" data-label="Контракты" className="number">{row.shares == null ? "—" : row.shares.toFixed(2)}</td>
+        <td role="cell" data-label="Комиссия" className="number">{dollars(row.fee)}</td>
+        <td role="cell" data-label="Проскальзывание" className="number">{row.slippage == null ? "—" : row.slippage.toFixed(1) + " б.п."}</td>
+      </>}
+      <td role="cell" data-label="PnL" className={"number " + (pnl != null && pnl > 0 ? "positive" : pnl != null && pnl < 0 ? "negative" : "")}>
+        {dollars(pnl)}{row.settled_at ? <small>Реализован</small> : pnl != null ? <small>Оценка Gamma</small> : null}</td>
+      <td role="cell" data-label="Время · Киев"><small>Сигнал {when(row.observed_at)}</small>
+        {row.opened_at && <small>Исполнение {when(row.opened_at)}</small>}
+        {details && row.execution?.delayMs != null && <small>Задержка {Math.round(row.execution.delayMs)} мс</small>}</td>
+    </tr>;
+  })}</tbody></table></div>;
 }
 function HistoryPanel({ enabled }: { enabled: boolean }) {
   const [filter, setFilter] = useState("all");
@@ -239,7 +289,7 @@ function Equity({ data, start }: { data: WorkspaceData | null; start: () => void
     time: when(p.at), value: p.value,
   })) ?? [];
   return <Panel className="equity"><div className="panel-head"><div><h2>Кривая капитала</h2><p>Переоценка виртуального банка</p></div>
-    {selected && <div className="segments" role="group" aria-label="Период графика">{[7, 14, 21].map(n => <button key={n} className={range === n ? "selected" : ""} onClick={() => setRange(n)} aria-pressed={range === n}>{n} д</button>)}</div>}</div>
+    {selected && <div className="segments" role="group" aria-label="Период графика">{[7, 14, 21, 30].map(n => <button key={n} className={range === n ? "selected" : ""} onClick={() => setRange(n)} aria-pressed={range === n}>{n} д</button>)}</div>}</div>
     {runs.length > 0 && <select className="chart-select" value={selected?.id} onChange={e => setChosen(e.target.value)} aria-label="Тест для графика">
       {runs.map(r => <option value={r.id} key={r.id}>{strategies[r.strategy].name} · {shortMode(r.mode)} · {when(r.starts_at)}</option>)}
     </select>}
@@ -299,9 +349,9 @@ function StartForm({ strategy, wallet, wallets, onSubmit, busy }: { strategy: St
     <label>Макс. просадка, %<input name="drawdown" type="number" min="1" max="100" step=".1" defaultValue="15" required /></label>
     <label>Лимит открытых позиций, %<input name="exposure" type="number" min="1" max="100" step=".1" defaultValue="25" required /></label></div>
     <label>Макс. проскальзывание, б.п.<input name="slippage" type="number" min="0" max="5000" defaultValue="150" required /></label>
-    <fieldset><legend>Продолжительность</legend><div className="segments">
-      {[7, 14, 21].map(n => <button type="button" key={n} className={!custom && +days === n ? "selected" : ""} onClick={() => { setDays(String(n)); setCustom(false); }}>{n} дней</button>)}
-      <button type="button" className={custom ? "selected" : ""} onClick={() => setCustom(true)}>Своя</button></div></fieldset>
+    <fieldset><legend>Продолжительность, дней</legend><div className="segments">
+      {[7, 14, 21, 30].map(n => <button type="button" key={n} className={!custom && +days === n ? "selected" : ""} aria-pressed={!custom && +days === n} onClick={() => { setDays(String(n)); setCustom(false); }}>{n}</button>)}
+      <button type="button" className={custom ? "selected" : ""} aria-pressed={custom} onClick={() => setCustom(true)}>Своя</button></div></fieldset>
     {custom && <label>Дни<input name="custom-duration" aria-label="Своя продолжительность в днях" type="number" min=".05" max="365" step="any" value={days} onChange={e => setDays(e.target.value)} required /></label>}
     {strategies[selected].collector && <p className="notice">Для этой стратегии нужен сборщик котировок Polymarket.</p>}
     <Button type="submit" disabled={busy}>{busy ? "Запускаю…" : "Запустить тест"}<ArrowRight size={16} aria-hidden="true" /></Button>
@@ -364,6 +414,13 @@ export function Workspace() {
     }, 2500);
     return () => clearInterval(timer);
   }, [pair, dialog, refresh]);
+  useEffect(() => {
+    if (!data || window.location.hash !== "#start") return;
+    window.history.replaceState(null, "", "#strategies");
+    setPage("strategies");
+    startAfterAuth.current = !data.user;
+    setDialog(data.user ? "start" : "auth");
+  }, [data]);
   function navigate(next: Page) {
     setPage(next);
     setDrawer(false);
@@ -521,10 +578,10 @@ export function Workspace() {
           <Panel><div className="panel-head"><div><h2>Профиль и уведомления</h2><p>{data?.user ? data.user.name : "Войдите через Telegram"}</p></div></div>
             <div className="setting-rows"><div><span><strong>Тема интерфейса</strong><small>{theme === "dark" ? "Тёмная" : "Светлая"}</small></span><Button size="small" variant="outline" onClick={toggleTheme}>{theme === "dark" ? <Sun size={15} aria-hidden="true" /> : <Moon size={15} aria-hidden="true" />} Сменить</Button></div>
             <div><span><strong>Telegram-бот</strong><small>{data?.user?.linked ? "Чат подключён" : "Отправьте /start для уведомлений"}</small></span>{botUrl(data?.bot) && <a className="button button-outline button-small" href={botUrl(data?.bot)!} target="_blank" rel="noreferrer"><Send size={14} aria-hidden="true" /> Открыть</a>}</div>
-            {data?.user && <div><label htmlFor="alerts"><strong>Уведомления и дневной отчёт</strong><small>Сигналы, исполнения и крупные комбо</small></label><input id="alerts" type="checkbox" name="alerts" checked={data.user.alerts} onChange={e => void mutate(() => api("settings", { alerts: e.target.checked }), "Настройки сохранены")} /></div>}
+            {data?.user && <div><label htmlFor="alerts"><strong>Уведомления и дневной отчёт</strong><small>Исполнения, комбо и отчёты. Запросы подтверждения приходят отдельно.</small></label><input id="alerts" type="checkbox" name="alerts" checked={data.user.alerts} onChange={e => void mutate(() => api("settings", { alerts: e.target.checked }), "Настройки сохранены")} /></div>}
             {data?.user && <Button variant="ghost" onClick={() => void mutate(() => api("auth/logout", {}), "Вы вышли из аккаунта")}>Выйти из аккаунта</Button>}</div></Panel>
           <Panel><div className="panel-head"><div><h2>Состояние системы</h2><p>Мониторинг рынков и сборщика</p></div><Button aria-label="Обновить состояние" variant="ghost" size="icon" onClick={refresh}><RefreshCw size={17} aria-hidden="true" /></Button></div>
-            <MarketHealth data={data} unavailable={offline} />
+            <MarketHealth data={data} unavailable={offline} diagnostics />
             <CollectorDiagnostics data={data} />
             <details className="collector-help"><summary>Как запустить сборщик бесплатно</summary>
               <p>WebSocket передаёт изменения стакана Polymarket в реальном времени. Подписка на публичный поток бесплатна. Оставьте сборщик запущенным на своём компьютере, пока идёт тест.</p>

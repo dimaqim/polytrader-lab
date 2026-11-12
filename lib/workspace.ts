@@ -9,7 +9,8 @@ export type Run = {
 export type Trade = {
   id: string; strategy: Strategy; mode: string; label: string; status: string; reason: string | null;
   observed_at: string; target_at: string; shares: number | null; price: number | null; cost: number | null; fee: number | null;
-  pnl: number | null; settled_at: string | null; execution?: { delayMs: number | null };
+  pnl: number | null; settled_at: string | null; opened_at: string | null; slippage: number | null;
+  slug: string | null; outcome: string | null; unrealized_pnl: number | null; execution?: { delayMs: number | null };
   evidence?: { timingErrorMs?: number; detectionDelayMs?: number; modeledShares?: number; modeledSpread?: number };
 };
 export type WorkspaceData = {
@@ -21,10 +22,11 @@ export type WorkspaceData = {
   combos: { id: string; name: string | null; wallet: string; stake: number; event_at: string; detected_at: string; author_pnl: number | null;
     payload: { status: string; legs: { leg_outcome_label: string; market: { title: string } }[] } }[];
   health: { source: string; at: string; details: {
-    sections?: boolean[]; connected?: boolean;
+    sections?: boolean[]; connected?: boolean; socketOpen?: boolean;
+    gamma?: boolean; clob?: boolean; data?: boolean; bot?: boolean;
     status?: "connecting" | "reconnecting" | "syncing" | "connected" | "disconnected";
     trackedMarkets?: number; readyMarkets?: number; lastQuoteAt?: string | null;
-    averageLatencyMs?: number | null; p95LatencyMs?: number | null; clockSkewMs?: number | null;
+    p50LatencyMs?: number | null; p95LatencyMs?: number | null; clockSkewMs?: number | null;
     lastError?: { code: string; at: string }; catalogError?: { code: string; at: string };
   } }[];
   collectorWindows?: { strategy: "btc5" | "btc15"; observed: number; missed: number }[];

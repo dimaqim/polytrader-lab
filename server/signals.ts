@@ -22,7 +22,7 @@ export async function recordSignal(s: Signal) {
     on conflict(key) do nothing returning id`;
   return rows[0]?.id as string | undefined;
 }
-export async function distributeSignals() {
+export async function distributeSignals(signalId?: string) {
   await database()`with new_decisions as (
     insert into lab.decisions(experiment,signal,status,reason,ready_at)
     select e.id,s.id,case when e.paused or e.risk_blocked or s.reason is not null or s.expires_at<=now() then 'unfilled'
@@ -31,16 +31,17 @@ export async function distributeSignals() {
       greatest(now(),s.observed_at+s.delay_ms*interval '1 ms')
     from lab.signals s join lab.experiments e on e.strategy=s.strategy and e.version=s.version and e.starts_at<=s.target_at and e.ends_at>s.target_at
       and (s.strategy<>'copy' or e.wallet=s.wallet)
-    where s.observed_at>now()-interval '2 days'
+    where s.observed_at>now()-interval '2 days' and (${signalId ?? null}::uuid is null or s.id=${signalId ?? null}::uuid)
     on conflict(experiment,signal) do nothing returning *
   ) insert into lab.outbox(key,chat_id,payload)
     select 'signal:'||d.id,u.chat_id,jsonb_build_object('text','Paper · '||s.label||
-      case when d.status='pending' then E'\nПодтвердить до '||to_char(s.expires_at at time zone 'Europe/Kyiv','HH24:MI:SS')||' (Киев)' else E'\nАвтоматическая проверка исполнения' end,
-      'reply_markup',case when d.status='pending' then jsonb_build_object('inline_keyboard',jsonb_build_array(jsonb_build_array(
+      E'\nПодтвердить до '||to_char(least(s.expires_at,e.ends_at) at time zone 'Europe/Kyiv','HH24:MI:SS')||' (Киев)',
+      'signal_id',s.id,'expires_at',least(s.expires_at,e.ends_at),
+      'reply_markup',jsonb_build_object('inline_keyboard',jsonb_build_array(jsonb_build_array(
         jsonb_build_object('text','Подтвердить','callback_data','yes:'||d.id),
-        jsonb_build_object('text','Пропустить','callback_data','no:'||d.id)))) end)
+        jsonb_build_object('text','Пропустить','callback_data','no:'||d.id)))))
     from new_decisions d join lab.experiments e on e.id=d.experiment join lab.users u on u.id=e.user_id
-    join lab.signals s on s.id=d.signal where d.status in ('pending','queued') and u.chat_id is not null and u.alerts
+    join lab.signals s on s.id=d.signal where d.status='pending' and u.chat_id is not null
     on conflict do nothing`;
 }
 type LiveBtcBook = {
