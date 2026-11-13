@@ -32,7 +32,7 @@ function TradeCard({ row }: { row: Trade }) {
     <header className="trade-header">
       <div className="trade-source">
         <span className="avatar" aria-hidden="true">{trader.slice(0, 1).toUpperCase()}</span>
-        <div>{row.wallet ? <a href={walletLink(row.wallet)} target="_blank" rel="noreferrer" className="trader">{trader}</a>
+        <div>{row.wallet ? <a aria-label={`Трейдер ${trader} на Polymarket`} href={walletLink(row.wallet)} target="_blank" rel="noreferrer" className="trader">{trader}</a>
           : <strong>{row.strategy === "combo" ? "Комбо" : trader}</strong>}
           <div className="muted trade-mode">{row.mode === "confirm" ? "С подтверждением" : "Автокопирование"}</div>
         </div>
@@ -79,10 +79,18 @@ export function TradeJournal({ authenticated, onStart, onLogin }: {
   const [filter, setFilter] = useState<Filter>("trades");
   const [rows, setRows] = useState<Trade[]>([]);
   const [next, setNext] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(authenticated);
   const [error, setError] = useState(false);
   const [revision, setRevision] = useState(0);
   const [cursor, setCursor] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!authenticated || cursor) return;
+    const refresh = () => { if (!document.hidden) setRevision(value => value + 1); };
+    const timer = window.setInterval(refresh, 25_000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
+  }, [authenticated, cursor]);
 
   useEffect(() => {
     if (!authenticated) return;

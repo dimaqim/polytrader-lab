@@ -47,6 +47,7 @@ function StartForm({ data, wallet, busy, submit }: { data: WorkspaceData; wallet
   const [bank, setBank] = useState(100);
   const [stake, setStake] = useState(10);
   const [mode, setMode] = useState("auto");
+  const [period, setPeriod] = useState("7");
   const request = useRef<{ key: string; id: string } | null>(null);
   const walletKnown = data.wallets.some(w => w.address === selection);
   const minExposure = Math.max(1, Math.min(100, Math.ceil(stake / (bank || 1) * 100)));
@@ -56,7 +57,7 @@ function StartForm({ data, wallet, busy, submit }: { data: WorkspaceData; wallet
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const payload = { strategy: "copy", wallet: walletKnown ? selection : String(form.get("wallet")).trim(), mode, bank, stake,
-      days: Number(form.get("days")), exposure: Number(form.get("exposure")), drawdown: Number(form.get("drawdown")),
+      days: Number(period === "custom" ? form.get("days") : period), exposure: Number(form.get("exposure")), drawdown: Number(form.get("drawdown")),
       slippage: Math.round(Number(form.get("slippage")) * 100) };
     const key = JSON.stringify(payload);
     if (request.current?.key !== key) request.current = { key, id: crypto.randomUUID() };
@@ -79,8 +80,12 @@ function StartForm({ data, wallet, busy, submit }: { data: WorkspaceData; wallet
       <label>Режим<select value={mode} onChange={e => setMode(e.target.value)}>
         <option value="auto">Автоматически</option><option value="confirm">С подтверждением</option><option value="both">Оба режима</option>
       </select></label>
-      <label>Длительность<select name="days" defaultValue="7">{[7, 14, 21, 30].map(days => <option key={days} value={days}>{days} дней</option>)}</select></label>
+      <label>Длительность<select value={period} onChange={e => setPeriod(e.target.value)}>
+        {[7, 14, 21, 30].map(days => <option key={days} value={days}>{days} дней</option>)}
+        <option value="custom">Свой срок</option>
+      </select></label>
     </div>
+    {period === "custom" && <label>Сколько дней<input name="days" type="number" min=".05" max="365" step="any" defaultValue="7" required /></label>}
     {mode !== "auto" && <p className="form-hint">{mode === "both" ? "Создадим два теста с отдельными банками. " : ""}Запрос на подтверждение придёт в чат.</p>}
     <details className="form-limits">
       <summary>Ограничения цены и риска <ChevronDown size={17} /></summary>

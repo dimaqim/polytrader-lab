@@ -78,7 +78,7 @@ async function historyFor(user: string, url: URL) {
     from lab.visible_trades where user_id=${user} and (
       ${filter}='all' or (${filter}='trades' and opened_at is not null) or (${filter}='settled' and settled_at is not null)
       or (${filter}='open' and opened_at is not null and settled_at is null)
-      or (${filter}='skipped' and status in ('unfilled','skipped')) or status=${filter}
+      or (${filter}='skipped' and status in ('unfilled','skipped')) or (status=${filter} and (status<>'pending' or expires_at>now()))
     ) and (${time ?? null}::timestamptz is null or (observed_at,id)<(${time ?? null}::timestamptz,${id ?? null}::uuid))
     order by observed_at desc,id desc limit 51`;
   const visible = rows.slice(0,50);
