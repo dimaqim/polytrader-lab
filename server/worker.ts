@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { database, date, log } from "./db.ts";
 import { marketBySlug, marketByCondition, page, request, type Activity, type Page, type ComboPosition, type Leader } from "./polymarket.ts";
-import { btcRule, walletPattern } from "../lib/strategies.ts";
+import { walletPattern } from "../lib/strategies.ts";
+import { hiddenMarket } from "../lib/market-scope.ts";
 import { distributeSignals, executeDecision, recordSignal, upsertMarket } from "./signals.ts";
 import { deliverNotifications, telegram } from "./telegram.ts";
-import { strategies, type Strategy } from "../lib/strategies.ts";
 import { tradingReports } from "./reporting.ts";
 
 const minute = 60_000;
@@ -24,10 +24,14 @@ async function archive(wallet: string, rows: Activity[]) {
     select ${wallet},x.id,x.at,x.payload from jsonb_to_recordset(${JSON.stringify(entries)}::jsonb)
     as x(id text,at timestamptz,payload jsonb) on conflict do nothing`;
 }
+async function archiveHasSpace() {
+  const [storage] = await database()`select pg_total_relation_size('lab.wallet_activity')::float8 as bytes`;
+  return storage.bytes < 750 * 1024 ** 2;
+}
+
 async function backfillHistory() {
+  if (!await archiveHasSpace()) return;
   const sql = database();
-  const [storage] = await sql`select pg_total_relation_size('lab.wallet_activity')::float8 as bytes`;
-  if (storage.bytes >= 750 * 1024 ** 2) throw new Error("Wallet archive reached the 750 MiB storage budget");
   const [wallet] = await sql`select address,history_cursor,history_end from lab.wallets where not history_complete
     order by case when source='research' then 0 else 1 end,updated_at limit 1`;
   if (!wallet) return;
@@ -52,7 +56,7 @@ async function discoverWallets() {
   }
 }
 
-async function scanCopy(wallet: string) {
+async function scanCopy(wallet: string, saveArchive: boolean) {
   const now = Date.now();
   const params = { user: wallet, type: "TRADE", start: String(Math.floor((now - 3 * minute) / 1000)),
     end: String(Math.floor(now / 1000)), limit: "100" };
@@ -62,7 +66,7 @@ async function scanCopy(wallet: string) {
   for (let i = 0; i < 3; i++) {
     const result: Page<Activity> = await page<Activity>("/activity", { ...params, ...(cursor ? { cursor } : {}) });
     const observed = Date.now();
-    await archive(wallet, result.data);
+    if (saveArchive) await archive(wallet, result.data);
     collected.push(...result.data.map(trade => ({ trade, observed })));
     cursor = result.pagination.next_cursor;
     if (!result.pagination.has_more) { complete = true; break; }
@@ -70,7 +74,7 @@ async function scanCopy(wallet: string) {
   if (!complete) await log("copy_coverage", new Error("Полная выборка окна не поместилась в один запуск"));
   const markets = new Map<string, Awaited<ReturnType<typeof marketBySlug>>>();
   for (const { trade: a, observed } of collected.reverse()) {
-    if (a.type !== "TRADE" || !Number.isFinite(a.timestamp) || a.timestamp * 1000 > observed) continue;
+    if (a.type !== "TRADE" || !Number.isFinite(a.timestamp) || a.timestamp * 1000 > observed || hiddenMarket(a.title, a.slug)) continue;
     const key = "copy:" + wallet + ":" + activityId(a);
     const token = a.token_id ?? a.asset;
     let reason = a.side === "BUY" ? undefined : "source_sell_outside_v1";
@@ -90,10 +94,11 @@ async function scanCopy(wallet: string) {
       if (!market || market.condition !== a.condition_id || !market.tokens.includes(token)) reason = reason ?? "missing_market";
       else await upsertMarket(market);
     }
+    if (market && hiddenMarket(market.title, market.slug)) continue;
     await recordSignal({ key, strategy: "copy", wallet, condition: market?.condition, token, label: a.title || "Copy Trading",
       targetAt: observed, observedAt: observed, expiresAt: Math.min(observed + 90_000, market?.endsAt ?? Infinity),
       reference: a.price > 0 && a.price < 1 ? a.price : undefined, reason,
-      evidence: { upstreamAt: a.timestamp * 1000, detectionDelayMs: observed - a.timestamp * 1000, side: a.side, complete } });
+      evidence: { upstreamAt: a.timestamp * 1000, detectionDelayMs: observed - a.timestamp * 1000, side: a.side, slug: a.slug, outcome: a.outcome, complete } });
   }
 }
 
@@ -105,7 +110,8 @@ async function scanCombos() {
     const observed = Date.now();
     for (const c of positions.data) {
       const entered = Date.parse(c.first_entry_at);
-      if (!(c.entry_cost_usdc >= 2000) || !Number.isFinite(entered) || entered > observed || !c.legs?.length) continue;
+      if (!(c.entry_cost_usdc >= 2000) || !Number.isFinite(entered) || entered > observed || !c.legs?.length
+        || c.legs.some(l => hiddenMarket(l.market.title, l.market.slug))) continue;
       const id = c.proxy_wallet + ":" + c.combo_position_id;
       await sql`insert into lab.combos(id,wallet,stake,event_at,detected_at,payload)
         values(${id},${c.proxy_wallet},${c.entry_cost_usdc},${date(entered)},${date(observed)},${JSON.stringify(c)})
@@ -116,28 +122,10 @@ async function scanCombos() {
       await recordSignal({ key, strategy: "combo", label, targetAt: observed, observedAt: observed,
         expiresAt: observed + minute, reason: "combo_rfq_depth_unavailable", evidence: { stake: c.entry_cost_usdc, entered } });
       await sql`insert into lab.outbox(key,chat_id,payload)
-        select ${key}||':'||id,chat_id,jsonb_build_object('text',${"Комбо от $" + Math.round(c.entry_cost_usdc) + "\n" + label})
+        select ${key}::text||':'||id,chat_id,jsonb_build_object('text',${"Замечено комбо на $" + Math.round(c.entry_cost_usdc) + "\n" + label}::text,'section','combos')
         from lab.users where alerts and chat_id is not null on conflict do nothing`;
     }
   });
-}
-
-async function marketCoverage(now: number) {
-  const sql = database();
-  const window = Math.floor(now / minute) * minute;
-  for (const interval of [5, 15]) {
-    const duration = interval * minute;
-    const end = Math.ceil(window / duration) * duration;
-    for (const close of [end - duration, end, end + duration]) {
-      const rule = btcRule(interval, close);
-      if (now <= rule.target + 5000 || now - rule.target > 3 * minute) continue;
-      const slug = `btc-updown-${interval}m-${(close - duration) / 1000}`;
-      const [m] = await sql`select condition,title from lab.markets where slug=${slug}`;
-      await recordSignal({ key: rule.strategy + ":" + slug, strategy: rule.strategy, label: m?.title ?? slug, condition: m?.condition,
-        targetAt: rule.target, observedAt: now, expiresAt: close, reason: m ? "missing_collector_window" : "missing_catalog_window",
-        evidence: { timingErrorMs: now - rule.target } });
-    }
-  }
 }
 
 async function settleAndMark() {
@@ -172,8 +160,9 @@ async function settleAndMark() {
     from inserted i where i.experiment=e.id`;
 }
 
-async function checkServices(gamma: boolean) {
-  const [clob, data, bot] = await Promise.all([
+async function checkServices() {
+  const [gamma, clob, data, bot] = await Promise.all([
+    protect("health_gamma", () => request("https://gamma-api.polymarket.com/markets?limit=1", fetch, 1)),
     protect("health_clob", () => request("https://clob.polymarket.com/time", fetch, 1)),
     protect("health_data", () => page<Leader>("/leaderboard", { category: "crypto", time_period: "week", limit: "1" })),
     protect("health_telegram", () => telegram("getMe", {})),
@@ -185,35 +174,21 @@ async function checkServices(gamma: boolean) {
     on conflict(source) do update set at=excluded.at,details=excluded.details`;
 }
 
-async function experimentNotifications(slot: number) {
+async function experimentNotifications() {
   const sql = database();
   const rows = await sql`select e.id,e.strategy,e.mode,u.chat_id, coalesce(sum(p.pnl),0)::float8 as pnl,
       count(p.id) filter(where p.settled_at is null)::int as open
     from lab.experiments e join lab.users u on u.id=e.user_id left join lab.positions p on p.experiment=e.id
-    where e.ends_at<=now() and e.ends_at>now()-interval '24 hours' and u.alerts and u.chat_id is not null
+    where e.strategy in ('copy','combo') and e.ends_at<=now() and e.ends_at>now()-interval '24 hours' and u.alerts and u.chat_id is not null
       and not exists(select 1 from lab.outbox o where o.key='completed:'||e.id)
     group by e.id,u.chat_id`;
   for (const e of rows) {
-    const message = `Тест завершён · ${strategies[e.strategy as Strategy].name} · ${e.mode === "auto" ? "Авто" : "Подтверждение"}\nРеализованный PnL: $${e.pnl.toFixed(2)}`
+    const message = `Тест завершён. ${e.strategy === "copy" ? "Копирование сделок" : "Наблюдение за комбо"} (${e.mode === "auto" ? "авто" : "с подтверждением"})\nИтог закрытых сделок: $${e.pnl.toFixed(2)}`
       + (e.open ? `\nОжидают расчёта: ${e.open}` : "");
     await sql`insert into lab.outbox(key,chat_id,payload) values(${"completed:" + e.id},${e.chat_id},${JSON.stringify({ text: message })})
       on conflict do nothing`;
   }
-  await sql`with outage as (
-    select not exists(select 1 from lab.heartbeats where source='collector' and at>now()-interval '90 seconds'
-      and details->>'connected'='true') as active
-  ), changed as (
-    insert into lab.heartbeats(source,at,details)
-    select 'collector_notice',now(),jsonb_build_object('active',active) from outage
-    on conflict(source) do update set at=excluded.at,details=excluded.details
-      where lab.heartbeats.details is distinct from excluded.details
-    returning details
-  ) insert into lab.outbox(key,chat_id,payload)
-  select 'collector:offline:'||u.id||':'||${date(slot)},u.chat_id,jsonb_build_object('text',
-    'PolyTrader Lab · Нет достоверных котировок WebSocket. Новые BTC-сигналы без подтверждённого стакана пропускаются.')
-  from changed,lab.users u where details->>'active'='true' and u.alerts and u.chat_id is not null and exists(
-    select 1 from lab.experiments e where e.user_id=u.id and e.strategy in ('btc5','btc15','maker')
-    and e.ends_at>now() and not e.paused and not e.risk_blocked) on conflict do nothing`;
+
 }
 
 export async function runWorker(slot: number, daily = false) {
@@ -231,28 +206,15 @@ export async function runWorker(slot: number, daily = false) {
         on conflict do nothing`;
     }
   } else {
-    const now = Date.now();
     const jobs = [
-      protect("btc_catalog", async () => {
-        let failures = 0;
-        for (const interval of [5, 15]) {
-          const duration = interval * minute;
-          const start = Math.floor(now / duration) * duration;
-          const results = await Promise.allSettled([start - duration, start, start + duration].map(async t => {
-            const m = await marketBySlug(`btc-updown-${interval}m-${t / 1000}`);
-            if (m) await upsertMarket(m);
-          }));
-          for (const result of results) if (result.status === "rejected") { failures++; await log("btc_catalog", result.reason); }
-        }
-        await marketCoverage(Date.now());
-        if (failures) throw Error(`Upstream failed for ${failures} BTC catalogue lookups`);
-      }),
       protect("copy", async () => {
-        const wallets = await sql`select distinct wallet from lab.experiments where strategy='copy' and ends_at>now() and wallet is not null limit 8`;
-        for (const { wallet } of wallets) await protect("copy_wallet", () => scanCopy(wallet));
+        const wallets = await sql`select distinct wallet from lab.experiments where strategy='copy' and not paused and not risk_blocked and ends_at>now() and wallet is not null limit 8`;
+        const saveArchive = wallets.length > 0 && await archiveHasSpace();
+        let failed = 0;
+        for (const { wallet } of wallets) if (!await protect("copy_wallet", () => scanCopy(wallet, saveArchive))) failed++;
+        if (failed) throw new Error("Some watched wallets could not be checked");
       }),
       protect("portfolio", settleAndMark),
-      protect("wallet_history", backfillHistory),
     ];
     if (Math.floor(slot / minute) % 5 === 0) jobs.push(protect("combo", async () => {
       const [status] = await sql`select exists(select 1 from lab.wallets where source='combos') as ready`;
@@ -260,23 +222,18 @@ export async function runWorker(slot: number, daily = false) {
       await scanCombos();
     }));
     const health = await Promise.all(jobs);
-    if (health.some(section => !section)) {
-      const hour = date(Math.floor(slot / 3_600_000) * 3_600_000);
-      await sql`insert into lab.outbox(key,chat_id,payload)
-        select 'health:'||id||':'||${hour},chat_id,jsonb_build_object('text',
-          'PolyTrader Lab · Ошибка мониторинга. Состояние источников доступно в настройках Mini App.')
-        from lab.users where alerts and chat_id is not null on conflict do nothing`;
-    }
-    if (Math.floor(slot / minute) % 5 === 0) await protect("service_health", () => checkServices(health[0]));
-    await protect("experiment_notifications", () => experimentNotifications(slot));
     await distributeSignals();
-    await sql`update lab.decisions d set status='unfilled',
-      reason=case when s.strategy in ('btc5','btc15') and d.status in ('queued','processing') then 'missing_collector_execution' else 'expired' end,
-      updated_at=now()
+    await deliverNotifications(undefined, true);
+    await sql`update lab.decisions d set status='unfilled',reason='expired',updated_at=now()
       from lab.signals s,lab.experiments e where d.signal=s.id and d.experiment=e.id
-      and (d.status in ('queued','pending') or (s.strategy in ('btc5','btc15') and d.status='processing' and d.lease_at<now()-interval '45 seconds'))
+      and s.strategy in ('copy','combo')
+      and (d.status in ('queued','pending') or (d.status='processing' and d.lease_at<now()-interval '45 seconds'))
       and least(s.expires_at,e.ends_at)<=now()`;
     for (let i = 0; i < 12; i++) if (!await executeDecision(undefined, "copy")) break;
+    if (Math.floor(slot / minute) % 5 === 0) {
+      await Promise.all([protect("service_health", checkServices), protect("wallet_history", backfillHistory)]);
+    }
+    await protect("experiment_notifications", experimentNotifications);
     await sql`insert into lab.heartbeats(source,at,details) values('neon',now(),${JSON.stringify({ sections: health })})
       on conflict(source) do update set at=excluded.at,details=excluded.details`;
   }

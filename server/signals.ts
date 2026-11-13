@@ -1,6 +1,7 @@
 import { database, date, log } from "./db.ts";
 import { orderBook, type Market } from "./polymarket.ts";
 import { freshBook, marketBuy, type Book, type Fee } from "../lib/simulator.ts";
+import { hiddenMarket } from "../lib/market-scope.ts";
 import type { Strategy } from "../lib/strategies.ts";
 
 export async function upsertMarket(m: Market) {
@@ -25,23 +26,28 @@ export async function recordSignal(s: Signal) {
 export async function distributeSignals(signalId?: string) {
   await database()`with new_decisions as (
     insert into lab.decisions(experiment,signal,status,reason,ready_at)
-    select e.id,s.id,case when e.paused or e.risk_blocked or s.reason is not null or s.expires_at<=now() then 'unfilled'
+    select e.id,s.id,case when e.paused or e.risk_blocked or s.reason is not null or (s.strategy='copy' and (s.evidence->>'upstreamAt')::float8<extract(epoch from e.starts_at)*1000) or s.expires_at<=now() then 'unfilled'
       when e.mode='confirm' then 'pending' else 'queued' end,
-      case when e.paused or e.risk_blocked then 'risk_or_pause' else coalesce(s.reason,case when s.expires_at<=now() then 'expired' end) end,
+      case when e.paused or e.risk_blocked then 'risk_or_pause' else coalesce(s.reason,case when s.strategy='copy' and (s.evidence->>'upstreamAt')::float8<extract(epoch from e.starts_at)*1000 then 'source_before_start'
+        when s.expires_at<=now() then 'expired' end) end,
       greatest(now(),s.observed_at+s.delay_ms*interval '1 ms')
     from lab.signals s join lab.experiments e on e.strategy=s.strategy and e.version=s.version and e.starts_at<=s.target_at and e.ends_at>s.target_at
       and (s.strategy<>'copy' or e.wallet=s.wallet)
-    where s.observed_at>now()-interval '2 days' and (${signalId ?? null}::uuid is null or s.id=${signalId ?? null}::uuid)
+    where s.observed_at>now()-interval '2 days'
+      and s.strategy in ('copy','combo')
+      and not lab.hidden_market(s.label,coalesce(s.evidence->>'slug',(select m.slug from lab.markets m where m.condition=s.condition))) and (${signalId ?? null}::uuid is null or s.id=${signalId ?? null}::uuid)
     on conflict(experiment,signal) do nothing returning *
   ) insert into lab.outbox(key,chat_id,payload)
-    select 'signal:'||d.id,u.chat_id,jsonb_build_object('text','Paper · '||s.label||
+    select 'signal:'||d.id,u.chat_id,jsonb_build_object('text','Виртуальная покупка · нужен ваш ответ'||E'\n'||s.label||
+      E'\nТрейдер: '||coalesce(w.name,s.wallet,'—')||
+      case when s.reference is not null then E'\nЦена трейдера: $'||round(s.reference,4) else '' end||
       E'\nПодтвердить до '||to_char(least(s.expires_at,e.ends_at) at time zone 'Europe/Kyiv','HH24:MI:SS')||' (Киев)',
       'signal_id',s.id,'expires_at',least(s.expires_at,e.ends_at),
       'reply_markup',jsonb_build_object('inline_keyboard',jsonb_build_array(jsonb_build_array(
         jsonb_build_object('text','Подтвердить','callback_data','yes:'||d.id),
         jsonb_build_object('text','Пропустить','callback_data','no:'||d.id)))))
     from new_decisions d join lab.experiments e on e.id=d.experiment join lab.users u on u.id=e.user_id
-    join lab.signals s on s.id=d.signal where d.status='pending' and u.chat_id is not null
+    join lab.signals s on s.id=d.signal left join lab.wallets w on w.address=s.wallet where d.status='pending' and u.chat_id is not null
     on conflict do nothing`;
 }
 type LiveBtcBook = {
@@ -60,7 +66,7 @@ async function claimDecision(id?: string, strategy?: Strategy, collector = false
   ), claimed as (
     update lab.decisions d set status='processing',lease_at=date_trunc('milliseconds',clock_timestamp()) from work where d.id=work.id returning d.*
   ) select d.id,d.lease_at,d.ready_at,s.id as signal_id,s.strategy,s.token,s.reference,s.expires_at,s.observed_at,
-      m.fee,m.open,m.ends_at as market_ends,e.stake,e.slippage,s.evidence
+      s.label,m.slug,m.title,m.fee,m.open,m.ends_at as market_ends,e.stake,e.slippage,s.evidence
       from claimed d join lab.signals s on s.id=d.signal join lab.experiments e on e.id=d.experiment
       left join lab.markets m on m.condition=s.condition`;
   return rows[0];
@@ -78,7 +84,8 @@ export async function executeDecision(id?: string, strategy?: Strategy, live?: L
   const observedAt = +new Date(d.observed_at);
   const readyAt = +new Date(d.ready_at);
   try {
-    if (!d.open || Date.now() >= expiresAt) reason = "expired_or_closed";
+    if (hiddenMarket(d.label, d.slug) || hiddenMarket(d.title)) reason = "market_excluded";
+    else if (!d.open || Date.now() >= expiresAt) reason = "expired_or_closed";
     else if (!fee || !d.token || !(Number(d.reference) > 0)) reason = "missing_market_parameters";
     else {
       const quote = live

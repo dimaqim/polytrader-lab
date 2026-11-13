@@ -24,6 +24,7 @@
     "collector:check": "node --env-file-if-exists=.env.local scripts/collector.ts --probe=600"
   },
   "dependencies": {
+    "@fontsource-variable/mulish": "5.3.0",
     "@fontsource-variable/source-sans-3": "^5.3.1",
     "@fontsource/ibm-plex-mono": "^5.3.0",
     "@neondatabase/serverless": "1.2.0",

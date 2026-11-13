@@ -114,7 +114,7 @@ export function page<T>(path: string, params: Record<string, string>) {
 export type Activity = {
   id?: string; sequence_id?: string | number; transaction_hash: string; timestamp: number; type: string;
   side: string; condition_id: string; asset: string; token_id?: string; slug: string; title: string;
-  price: number; size: number; usdc_size: number;
+  price: number; size: number; usdc_size: number; outcome?: string;
 };
 export type ComboPosition = {
   combo_condition_id: string; combo_position_id: string; proxy_wallet: string; entry_cost_usdc: number;
@@ -124,6 +124,6 @@ export type ComboPosition = {
 export type Combo = {
   id: string; type: string; proxy_wallet: string; amount_usdc: number | null;
   combo_condition_id: string; combo_position_id: string; timestamp: number;
-  legs: { leg_outcome_label: string; market: { title: string } }[];
+  legs: { leg_outcome_label: string; market: { title: string; slug?: string } }[];
 };
 export type Leader = { user_id: string; user_name?: string; name?: string; pnl: number; volume: number };

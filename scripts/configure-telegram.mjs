@@ -18,7 +18,7 @@ async function call(method, body = {}) {
 const bot = await call("getMe");
 await call("setWebhook", { url: new URL("/telegram", webhookBase).href, secret_token: TELEGRAM_WEBHOOK_SECRET,
   allowed_updates: ["message", "callback_query"], max_connections: 8 });
-await call("setChatMenuButton", { menu_button: { type: "web_app", text: "Открыть Mini App", web_app: { url: APP_URL } } });
+await call("setChatMenuButton", { menu_button: { type: "web_app", text: "Открыть журнал", web_app: { url: APP_URL } } });
 await call("setMyCommands", { commands });
 const [info, registered, menu] = await Promise.all([call("getWebhookInfo"), call("getMyCommands"), call("getChatMenuButton")]);
 if (info.url !== new URL("/telegram", webhookBase).href || menu.web_app?.url !== new URL(APP_URL).href

@@ -41,3 +41,14 @@ test("retries transient rate limiting and does not retry validation errors", asy
   assert.equal(attempts, 2);
   await assert.rejects(request("https://example.com/endpoint", async () => new Response(null, { status: 400 })), UpstreamError);
 });
+
+test("market scope excludes BTC and ETH outcomes and keeps unrelated markets", async () => {
+  const { hiddenMarket } = await import("../lib/market-scope.ts");
+  for (const title of ["BTC Up or Down", "Bitcoin above 110k?", "Ethereum vs. Solana", "Цена эфира", "Цена биткоина"]) {
+    assert.equal(hiddenMarket(title), true, title);
+  }
+  assert.equal(hiddenMarket("Up or Down", "eth-updown-5m-1700000000"), true);
+  for (const title of ["Weather in London", "Netherlands vs. France", "Beth wins", "Etheridge wins"]) {
+    assert.equal(hiddenMarket(title), false, title);
+  }
+});

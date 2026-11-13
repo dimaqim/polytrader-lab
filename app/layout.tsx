@@ -1,12 +1,10 @@
 import type { Metadata, Viewport } from "next";
-import "@fontsource-variable/source-sans-3";
-import "@fontsource/ibm-plex-mono/400.css";
-import "@fontsource/ibm-plex-mono/500.css";
+import "@fontsource-variable/mulish";
 import Script from "next/script";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "PolyTrader Lab — Лаборатория стратегий",
+  title: "PolyTrader Lab — Журнал сделок",
   description: "Paper Trading на Polymarket. Исследуйте стратегии, риски и реальные рыночные данные.",
 };
 export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover" };
