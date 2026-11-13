@@ -15,8 +15,6 @@ export type Trade = {
 export type Wallet = { address: string; name: string; source: string; public_pnl: number | null };
 export type WorkspaceData = {
   runs: Run[]; wallets: Wallet[];
-  combos: { id: string; name: string | null; wallet: string; stake: number; event_at: string; detected_at: string;
-    payload: { legs: { leg_outcome_label: string; market: { title: string } }[] } }[];
   health: { source: string; at: string; details: { sections?: boolean[]; gamma?: boolean; clob?: boolean; data?: boolean; bot?: boolean } }[];
   user: { name: string; alerts: boolean; linked: boolean } | null;
   bot: string | null; asOf: string;

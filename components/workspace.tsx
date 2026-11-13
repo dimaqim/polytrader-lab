@@ -4,6 +4,7 @@ import { ArrowUpRight, ChevronDown, CircleHelp, Layers3, List, Plus, Settings, U
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { seedWallet } from "../lib/strategies";
 import type { Run, WorkspaceData } from "../lib/workspace";
+import { ComboJournal } from "./combo-journal";
 import { TradeJournal, dateTime, money, resultMoney, shortAddress, walletLink } from "./trade-journal";
 
 const tabs = [
@@ -237,7 +238,7 @@ export function Workspace() {
             history: "Виртуальные покупки и их результат",
             copy: "Выберите, чьи покупки отслеживать",
             strategies: "Отдельный виртуальный банк на каждый тест",
-            combos: "Наблюдение за ставками от $2 000",
+            combos: "Ставки трейдеров Polymarket от $2 000",
             settings: data?.user ? data.user.name : "Telegram и уведомления",
           }[page]}</p></div>
         {(page === "history" || page === "strategies") && <button className="action new-test" onClick={() => openStart()} disabled={loading}><Plus size={17} /> Новый тест</button>}
@@ -261,16 +262,7 @@ export function Workspace() {
           : <div className="empty"><WalletCards size={24} aria-hidden="true" /><h2>У вас пока нет тестов</h2>
             <p>Начните с трейдера и суммы, которую хотите проверить на виртуальных сделках.</p>
             <button className="action" onClick={() => openStart()}>Начать копировать</button></div>)}
-        {page === "combos" && <section className="section combo-list">
-          <p className="muted">Здесь видно, на какие исходы поставили другие трейдеры. Для комбо доступно наблюдение.</p>
-          {data?.combos.map(combo => <article key={combo.id} className="combo">
-            <header><a href={walletLink(combo.wallet)} target="_blank" rel="noreferrer" className="trader">{combo.name ?? shortAddress(combo.wallet)}</a>
-              <strong>{money(combo.stake)}</strong></header>
-            <ul>{combo.payload.legs.map((leg, index) => <li key={index}>{leg.market.title} <span>{leg.leg_outcome_label}</span></li>)}</ul>
-            <small>Замечено {dateTime(combo.detected_at)} по Киеву</small>
-          </article>)}
-          {!data?.combos.length && <p className="loading">Крупных комбо пока нет.</p>}
-        </section>}
+        {page === "combos" && <ComboJournal />}
         {page === "settings" && <section className="section settings">
           <div><span><strong>Обновление сделок</strong><small>{healthy ? "Данные Polymarket обновляются" : "Обновление данных задерживается"}</small></span>
             <button className="text-action" onClick={refresh}>Обновить</button></div>

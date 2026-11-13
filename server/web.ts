@@ -1,4 +1,5 @@
 import { seedWallet, strategies, walletPattern } from "../lib/strategies.ts";
+import { comboMoney, comboStates, type ComboRecord } from "../lib/combos.ts";
 import { activeStrategies } from "../lib/market-scope.ts";
 import { createPairing, pairingHash, sessionCookie, sessionUser, telegramIdentity } from "./auth.ts";
 import { database, log } from "./db.ts";
@@ -13,15 +14,9 @@ const allowedNumber = (n: unknown, min: number, max: number): n is number =>
 
 async function dataFor(user: string | null) {
   const sql = database();
-  const [wallets, combos, health, runs, userRows] = await sql.transaction([
+  const [wallets, health, runs, userRows] = await sql.transaction([
     sql`select address,name,source,public_pnl::float8 from lab.wallets
       order by case when address=${seedWallet} then 0 when source='research' then 1 else 2 end,public_pnl desc nulls last limit 55`,
-    sql`select c.id,c.wallet,c.stake::float8,c.event_at,c.detected_at,c.payload,w.name
-      from lab.combos c left join lab.wallets w on w.address=c.wallet
-      where not exists (
-        select 1 from jsonb_array_elements(c.payload->'legs') leg
-        where lab.hidden_market(leg->'market'->>'title',leg->'market'->>'slug')
-      ) order by detected_at desc limit 40`,
     sql`select source,at,details from lab.heartbeats where source in ('neon','polymarket','telegram')`,
     sql`select e.id,e.strategy,e.mode,e.bank::float8,e.cash::float8,e.stake::float8,e.starts_at,e.ends_at,e.paused,e.risk_blocked,
       e.wallet,w.name as wallet_name, (e.exposure*100)::float8 as max_exposure,
@@ -33,7 +28,7 @@ async function dataFor(user: string | null) {
       group by e.id,w.name order by e.starts_at desc limit 100`,
     sql`select name,alerts,chat_id is not null as linked from lab.users where id=${user}`,
   ]);
-  return { wallets, combos, health, runs, user: userRows[0] ?? null,
+  return { wallets, health, runs, user: userRows[0] ?? null,
     bot: process.env.TELEGRAM_BOT_USERNAME || null, asOf: new Date().toISOString() };
 }
 async function startRun(user: string, payload: Record<string, unknown>) {
@@ -87,6 +82,53 @@ async function historyFor(user: string, url: URL) {
   return json({ rows: visible, next });
 }
 
+async function combosFor(url: URL) {
+  const filter = url.searchParams.get("status") ?? "all";
+  const cursor = url.searchParams.get("cursor");
+  const wallet = url.searchParams.get("wallet");
+  const [time, id] = cursor?.split("|") ?? [];
+  if ((filter !== "all" && !Object.hasOwn(comboStates, filter)) || (wallet && !walletPattern.test(wallet))
+    || (cursor && (!time || !id || !Number.isFinite(Date.parse(time)) || !/^0x[0-9a-f]{40}:\d{1,80}$/i.test(id)))) {
+    return json({ error: "invalid_request" }, 400);
+  }
+
+  const sql = database();
+  const [rows, status] = await sql.transaction([
+    sql`with page as (
+      select c.id,c.wallet,c.stake::float8 as entry,c.event_at,c.detected_at,c.payload,w.name
+      from lab.combos c left join lab.wallets w on w.address=c.wallet
+      where (${filter}='all' or c.payload->>'status'=${filter}) and (${wallet}::text is null or c.wallet=${wallet})
+        and (${time ?? null}::timestamptz is null or (c.event_at,c.id)<(${time ?? null}::timestamptz,${id ?? null}::text))
+        and not exists (select 1 from jsonb_array_elements(c.payload->'legs') leg
+          where lab.hidden_market(coalesce(leg->'market'->>'question',leg->'market'->>'title'),
+            coalesce(leg->'market'->>'slug',leg->'market'->'event'->>'event_slug')))
+      order by c.event_at desc,c.id desc limit 26
+    )
+    select c.*,r.received,r.paid_at,r.tx_hash from page c left join lateral (
+      select sum(amount)::float8 as received,max(paid_at) as paid_at,
+        case when count(*)=1 then min(tx_hash) end as tx_hash
+      from lab.combo_redemptions where combo_id=c.id
+    ) r on true order by c.event_at desc,c.id desc`,
+    sql`select at,details from lab.heartbeats where source='combos'`,
+  ]);
+
+  const visible = rows.slice(0,25).map((row): ComboRecord => {
+    const { payload } = row;
+    return {
+      id: row.id, wallet: row.wallet, name: row.name, entry: row.entry, event_at: row.event_at,
+      detected_at: row.detected_at, paid_at: row.paid_at, tx_hash: row.tx_hash,
+      ...comboMoney(row.entry, payload.gross_entry_cost_usdc ?? null, payload.entry_fees_usdc ?? null,
+        payload.status, payload.realized_payout_usdc ?? null, row.received, payload.redeemable === true),
+      fee: payload.entry_fees_usdc ?? null, status: payload.status, redeemable: payload.redeemable === true,
+      resolved_at: payload.resolved_at ?? null, legs: payload.legs,
+    };
+  });
+  const last = visible.at(-1);
+  return json({ rows: visible,
+    next: rows.length > 25 && last ? new Date(last.event_at).toISOString() + "|" + last.id : null,
+    monitor: status[0] ? { ...status[0].details, checkedAt: status[0].at } : null });
+}
+
 export async function web(req: Request, route: string[]) {
   const action = route.join("/");
   try {
@@ -95,6 +137,7 @@ export async function web(req: Request, route: string[]) {
       await database()`select 1 from lab.markets limit 1`;
       return json({ ok: true, database: "connected" });
     }
+    if (req.method === "GET" && action === "combos") return await combosFor(new URL(req.url));
     const user = sessionUser(req);
     if (req.method === "GET" && action === "workspace") {
       if (!process.env.DATABASE_URL) return json({ error: "database_unconfigured" }, 503);

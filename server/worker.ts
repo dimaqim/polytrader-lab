@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { database, date, log } from "./db.ts";
-import { marketBySlug, marketByCondition, page, request, type Activity, type Page, type ComboPosition, type Leader } from "./polymarket.ts";
+import { marketBySlug, marketByCondition, page, request, type Activity, type Page, type Leader } from "./polymarket.ts";
 import { walletPattern } from "../lib/strategies.ts";
 import { hiddenMarket } from "../lib/market-scope.ts";
 import { distributeSignals, executeDecision, recordSignal, upsertMarket } from "./signals.ts";
 import { deliverNotifications, telegram } from "./telegram.ts";
 import { tradingReports } from "./reporting.ts";
+import { scanCombos } from "./combos.ts";
 
 const minute = 60_000;
 const activityId = (a: Activity) => String(a.id ?? a.sequence_id ?? createHash("sha256").update(JSON.stringify([
@@ -44,16 +45,13 @@ async function backfillHistory() {
 }
 
 async function discoverWallets() {
-  for (const category of ["crypto", "combos"]) {
-    const result = await page<Leader>("/leaderboard", { category, time_period: "week", limit: "12" });
-    const rows = result.data.filter(r => walletPattern.test(r.user_id) && Number.isFinite(r.pnl) && Number.isFinite(r.volume))
-      .map(r => ({ address: r.user_id.toLowerCase(), name: (r.user_name || r.name || r.user_id.slice(0, 10)).slice(0, 100), pnl: r.pnl, volume: r.volume }));
-    await database()`insert into lab.wallets(address,name,source,public_pnl,volume_shares)
-      select r.address,r.name,${category},r.pnl,r.volume
-      from jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) as r(address text,name text,pnl numeric,volume numeric)
-      on conflict(address) do update set public_pnl=excluded.public_pnl,volume_shares=excluded.volume_shares,
-      source=case when excluded.source='combos' and lab.wallets.source<>'research' then 'combos' else lab.wallets.source end`;
-  }
+  const result = await page<Leader>("/leaderboard", { category: "crypto", time_period: "week", limit: "12" });
+  const rows = result.data.filter(r => walletPattern.test(r.user_id) && Number.isFinite(r.pnl) && Number.isFinite(r.volume))
+    .map(r => ({ address: r.user_id.toLowerCase(), name: (r.user_name || r.name || r.user_id.slice(0, 10)).slice(0, 100), pnl: r.pnl, volume: r.volume }));
+  await database()`insert into lab.wallets(address,name,source,public_pnl,volume_shares)
+    select r.address,r.name,'crypto',r.pnl,r.volume
+    from jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) as r(address text,name text,pnl numeric,volume numeric)
+    on conflict(address) do update set public_pnl=excluded.public_pnl,volume_shares=excluded.volume_shares`;
 }
 
 async function scanCopy(wallet: string, saveArchive: boolean) {
@@ -100,32 +98,6 @@ async function scanCopy(wallet: string, saveArchive: boolean) {
       reference: a.price > 0 && a.price < 1 ? a.price : undefined, reason,
       evidence: { upstreamAt: a.timestamp * 1000, detectionDelayMs: observed - a.timestamp * 1000, side: a.side, slug: a.slug, outcome: a.outcome, complete } });
   }
-}
-
-async function scanCombos() {
-  const sql = database();
-  const wallets = await sql`select address from lab.wallets where source='combos' order by public_pnl desc nulls last limit 6`;
-  for (const wallet of wallets) await protect("combo_feed", async () => {
-    const positions = await page<ComboPosition>("/positions/combos", { user: wallet.address, limit: "30" });
-    const observed = Date.now();
-    for (const c of positions.data) {
-      const entered = Date.parse(c.first_entry_at);
-      if (!(c.entry_cost_usdc >= 2000) || !Number.isFinite(entered) || entered > observed || !c.legs?.length
-        || c.legs.some(l => hiddenMarket(l.market.title, l.market.slug))) continue;
-      const id = c.proxy_wallet + ":" + c.combo_position_id;
-      await sql`insert into lab.combos(id,wallet,stake,event_at,detected_at,payload)
-        values(${id},${c.proxy_wallet},${c.entry_cost_usdc},${date(entered)},${date(observed)},${JSON.stringify(c)})
-        on conflict(id) do update set stake=excluded.stake,payload=excluded.payload`;
-      if (observed - entered > 30 * minute || c.status !== "OPEN") continue;
-      const key = "combo:" + id;
-      const label = c.legs.map(l => l.market.title + " · " + l.leg_outcome_label).join(" / ").slice(0, 220);
-      await recordSignal({ key, strategy: "combo", label, targetAt: observed, observedAt: observed,
-        expiresAt: observed + minute, reason: "combo_rfq_depth_unavailable", evidence: { stake: c.entry_cost_usdc, entered } });
-      await sql`insert into lab.outbox(key,chat_id,payload)
-        select ${key}::text||':'||id,chat_id,jsonb_build_object('text',${"Замечено комбо на $" + Math.round(c.entry_cost_usdc) + "\n" + label}::text,'section','combos')
-        from lab.users where alerts and chat_id is not null on conflict do nothing`;
-    }
-  });
 }
 
 async function settleAndMark() {
@@ -216,11 +188,7 @@ export async function runWorker(slot: number, daily = false) {
       }),
       protect("portfolio", settleAndMark),
     ];
-    if (Math.floor(slot / minute) % 5 === 0) jobs.push(protect("combo", async () => {
-      const [status] = await sql`select exists(select 1 from lab.wallets where source='combos') as ready`;
-      if (!status.ready) await discoverWallets();
-      await scanCombos();
-    }));
+    if (Math.floor(slot / minute) % 5 === 0) jobs.push(protect("combo", scanCombos));
     const health = await Promise.all(jobs);
     await distributeSignals();
     await deliverNotifications(undefined, true);

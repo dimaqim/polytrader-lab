@@ -80,8 +80,9 @@ h1 { font-size: clamp(25px, 6.7vw, 39px); line-height: 1.08; font-weight: 850; l
 .new-test { flex: none; white-space: nowrap; }
 .text-action { min-height: 36px; padding: 4px 8px; color: var(--action); border-radius: 6px; font-weight: 800; }
 .journal-tools { margin-bottom: 8px; }
-.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 6px; }
-.filters button { min-height: 40px; padding: 4px 8px; color: var(--muted); border-radius: 6px; text-align: left; font-weight: 750; font-size: 13px; }
+.filters { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
+.filters button { grid-column: span 2; min-height: 44px; padding: 4px 5px; color: var(--muted); border-radius: 6px; text-align: center; font-weight: 750; font-size: 13px; }
+.filters button:nth-last-child(-n+2) { grid-column: span 3; }
 .filters button:hover, .filters button[aria-pressed=true] { background: var(--quiet); color: var(--action); }
 .journal-note { display: flex; align-items: center; justify-content: space-between; padding-left: 2px; color: var(--muted); font-size: 12px; }
 .trade-list, .run-list { display: grid; gap: 11px; }
@@ -160,10 +161,6 @@ input:not([type=checkbox]), select {
 .run-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 8px 0; margin-top: 8px; border-top: 1px solid var(--line); }
 .run-values dd { font-weight: 850; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .run footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 35px; font-size: 12px; color: var(--muted); }
-.combo header > strong { font-weight: 850; white-space: nowrap; }
-.combo ul { margin: 8px 0; padding-left: 18px; list-style: disc; }
-.combo li { margin-block: 3px; overflow-wrap: anywhere; }
-.combo li span { font-size: 12px; color: var(--action); font-weight: 750; }
 .settings > div { display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 7px 0 12px; border-bottom: 1px solid var(--line); }
 .settings strong, .settings small { display: block; }
 .settings input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--action); flex: none; }
@@ -196,4 +193,48 @@ input:not([type=checkbox]), select {
   .page-header { margin-bottom: 25px; }
   .trade-card { padding-inline: 20px; }
   .trade-time > div + div { padding-left: 16px; }
+}
+
+.combo-journal, .combo-entries { display: grid; gap: 12px; }
+.combo-journal { gap: 20px; }
+.combo-controls { display: grid; gap: 4px; }
+.combo-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; border: 1px solid var(--line); padding: 4px; border-radius: 9px; background: var(--paper); }
+.combo-filters button { display: grid; place-items: center; min-width: 0; min-height: 44px; padding: 4px 2px; border-radius: 5px; text-align: center; font-size: 12px; font-weight: 830; color: var(--muted); }
+.combo-filters button[aria-pressed=true], .combo-filters button:hover { background: var(--quiet); color: var(--action); }
+.combo-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.combo-toolbar p { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.combo-toolbar small { display: block; color: var(--alert-ink); }
+.combo-toolbar .text-action { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; font-size: 12px; }
+.combo-method { border-bottom: 1px solid var(--line); }
+.combo-method p { max-width: 62ch; padding-bottom: 10px; color: var(--muted); font-size: 13px; }
+.combo-day { display: grid; gap: 8px; }
+.combo-day h2 { color: var(--muted); font-size: 13px; font-weight: 820; }
+.combo { padding: 12px 14px 0; }
+.combo .combo-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding-bottom: 10px; }
+.combo-header h3 { font-size: 16px; font-weight: 850; overflow-wrap: anywhere; }
+.combo-header h3 svg { display: inline; margin-left: 3px; vertical-align: -.1em; }
+.combo-header p { font-size: 11px; color: var(--muted); }
+.combo-money { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-block: 1px solid var(--line); }
+.combo-money > div { min-width: 0; padding-block: 8px; }
+.combo-money > div + div { border-left: 1px solid var(--line); padding-inline: 8px 3px; }
+.combo-money dt { font-size: 10px; color: var(--muted); font-weight: 780; line-height: 1.25; }
+.combo-money dd { margin-top: 3px; font-weight: 850; font-size: clamp(12px, 3vw, 17px); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.combo-money dd.combo-unknown { font-weight: 720; font-size: 11px; color: var(--muted); line-height: 1.25; }
+.combo-payout-note { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.combo-details[open] { padding-bottom: 8px; }
+.combo-details .combo-dates { padding-bottom: 0; }
+.combo-details .text-action { padding-inline: 0; min-height: 44px; font-size: 12px; text-align: left; }
+.combo-legs { margin: 4px 0 0; padding: 0; list-style: none; }
+.combo-legs li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; align-items: start; padding: 7px 0; margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.combo-legs li + li { border-top: 1px solid var(--line); }
+.combo-legs + .combo-details { border-top: 1px solid var(--line); }
+.combo-legs li > span:first-child { color: var(--ink); font-weight: 680; }
+.combo-legs li small { display: block; margin-top: 2px; font-size: 11px; }
+.combo-legs li small strong { color: var(--action); }
+.combo-legs li a, .combo-dates dd a { text-decoration: underline; text-decoration-color: var(--outlined); text-underline-offset: 3px; }
+.combo-journal .load-more { justify-self: start; margin-top: 0; }
+
+@media (min-width: 520px) {
+  .filters { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .filters button, .filters button:nth-last-child(-n+2) { grid-column: auto; }
 }

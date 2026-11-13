@@ -10,6 +10,9 @@ export const money = (value: number) => currency.format(value);
 export const resultMoney = (value: number) => value > 0 ? "+" + money(value) : money(value);
 export const shortAddress = (value: string) => value.slice(0, 6) + "…" + value.slice(-4);
 export const walletLink = (wallet: string) => "https://polymarket.com/profile/" + encodeURIComponent(wallet);
+export const journalDay = (time: string) => new Intl.DateTimeFormat("ru-RU", {
+  timeZone: "Europe/Kyiv", day: "numeric", month: "long", year: "numeric",
+}).format(new Date(time));
 export const dateTime = (time: string | number) => new Intl.DateTimeFormat("ru-RU", {
   timeZone: "Europe/Kyiv", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit",
 }).format(new Date(time));
@@ -122,6 +125,13 @@ export function TradeJournal({ authenticated, onStart, onLogin }: {
     if (key === filter) return;
     setRows([]); setNext(null); setBusy(true); setCursor(null); setFilter(key);
   };
+  const days = new Map<string, Trade[]>();
+  for (const row of rows) {
+    const day = journalDay(row.opened_at ?? row.observed_at);
+    const group = days.get(day);
+    if (group) group.push(row);
+    else days.set(day, [row]);
+  }
   return <section aria-label="Журнал сделок">
     <header className="journal-tools">
       <div className="filters" role="group" aria-label="Фильтр сделок">
@@ -132,7 +142,9 @@ export function TradeJournal({ authenticated, onStart, onLogin }: {
       </div>
     </header>
     {error && <div className="notice" role="status">Журнал пока недоступен. <button onClick={() => setRevision(revision + 1)}>Повторить</button></div>}
-    {rows.length > 0 && <div className="trade-list">{rows.map(row => <TradeCard key={row.id} row={row} />)}</div>}
+    {days.size > 0 && <div className="trade-list">{Array.from(days, ([day, group]) => <section className="combo-day" key={day}>
+      <h2>{day}</h2><div className="trade-list">{group.map(row => <TradeCard key={row.id} row={row} />)}</div>
+    </section>)}</div>}
     {busy && rows.length === 0 && <p className="loading" role="status"><LoaderCircle size={17} /> Загружаем сделки…</p>}
     {!busy && !error && rows.length === 0 && <div className="empty">
       <List size={24} aria-hidden="true" /><h2>{{

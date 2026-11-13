@@ -118,12 +118,12 @@ export type Activity = {
 };
 export type ComboPosition = {
   combo_condition_id: string; combo_position_id: string; proxy_wallet: string; entry_cost_usdc: number;
-  gross_entry_cost_usdc: number; realized_payout_usdc: number; first_entry_at: string; status: string;
-  legs: Combo["legs"];
+  gross_entry_cost_usdc?: number; entry_fees_usdc?: number; realized_payout_usdc?: number;
+  first_entry_at: string; resolved_at?: string | null; updated_at?: string; updated_at_micros?: number;
+  status: string; redeemable?: boolean; legs: import("../lib/combos.ts").ComboLeg[];
 };
-export type Combo = {
-  id: string; type: string; proxy_wallet: string; amount_usdc: number | null;
-  combo_condition_id: string; combo_position_id: string; timestamp: number;
-  legs: { leg_outcome_label: string; market: { title: string; slug?: string } }[];
+export type ComboActivity = {
+  id: string; type: string; proxy_wallet: string; combo_position_id: string;
+  timestamp: number; payout_usdc?: number | null; transaction_hash: string;
 };
 export type Leader = { user_id: string; user_name?: string; name?: string; pnl: number; volume: number };

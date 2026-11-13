@@ -52,3 +52,22 @@ test("market scope excludes BTC and ETH outcomes and keeps unrelated markets", a
     assert.equal(hiddenMarket(title), false, title);
   }
 });
+
+test("combo accounting separates paid redemptions, open positions and settled losses", async () => {
+  const { comboMoney } = await import("../lib/combos.ts");
+  const entry = 8438.39271;
+  const gross = 8599.999994;
+  const fee = 161.59802;
+  const payout = 13715.098601;
+  assert.deepEqual(comboMoney(entry, gross, fee, "OPEN", 0, null, false),
+    { cost: gross, received: null, proceeds: null, profit: null });
+  assert.deepEqual(comboMoney(entry, gross, fee, "RESOLVED_WIN", 0, null, true),
+    { cost: gross, received: null, proceeds: null, profit: null });
+  assert.deepEqual(comboMoney(entry, gross, fee, "RESOLVED_WIN", payout, null, false),
+    { cost: gross, received: null, proceeds: payout, profit: 5115.10 });
+  assert.deepEqual(comboMoney(entry, gross, fee, "RESOLVED_WIN", payout, payout, false),
+    { cost: gross, received: payout, proceeds: payout, profit: 5115.10 });
+  assert.deepEqual(comboMoney(2000, null, 20, "RESOLVED_LOSS", 0, null, false),
+    { cost: 2020, received: 0, proceeds: 0, profit: -2020 });
+  assert.equal(comboMoney(entry, null, null, "RESOLVED_WIN", payout, payout, false).profit, null);
+});
