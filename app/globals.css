@@ -238,3 +238,7 @@ input:not([type=checkbox]), select {
   .filters { grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .filters button, .filters button:nth-last-child(-n+2) { grid-column: auto; }
 }
+
+@media (max-width: 359px) {
+  .combo-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
