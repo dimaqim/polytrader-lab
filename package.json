@@ -21,7 +21,14 @@
     "collector:stop": "node scripts/collector-control.mjs stop",
     "collector:status": "node scripts/collector-control.mjs status",
     "collector:launchd": "node scripts/collector-control.mjs launchd",
-    "collector:check": "node --env-file-if-exists=.env.local scripts/collector.ts --probe=600"
+    "collector:check": "node --env-file-if-exists=.env.local scripts/collector.ts --probe=600",
+    "weather": "node --env-file-if-exists=.env.local scripts/weather-collector.ts",
+    "weather:check": "node --env-file-if-exists=.env.local scripts/weather-collector.ts --probe",
+    "weather:start": "node scripts/collector-control.mjs start --weather",
+    "weather:stop": "node scripts/collector-control.mjs stop --weather",
+    "weather:status": "node scripts/collector-control.mjs status --weather",
+    "weather:launchd": "node scripts/collector-control.mjs launchd --weather",
+    "weather:verify": "node --env-file-if-exists=.env.local scripts/verify-weather-db.mjs"
   },
   "dependencies": {
     "@fontsource-variable/mulish": "5.3.0",

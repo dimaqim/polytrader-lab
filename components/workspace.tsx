@@ -1,9 +1,10 @@
 "use client";
 
-import { ArrowUpRight, ChevronDown, CircleHelp, Layers3, List, Plus, Settings, Users, WalletCards, X } from "lucide-react";
+import { ArrowUpRight, ChevronDown, CircleHelp, CloudSun, Layers3, List, Plus, Settings, Users, WalletCards, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { seedWallet } from "../lib/strategies";
 import type { Run, WorkspaceData } from "../lib/workspace";
+import { WeatherLab } from "./weather-lab";
 import { ComboJournal } from "./combo-journal";
 import { TradeJournal, dateTime, money, resultMoney, shortAddress, walletLink } from "./trade-journal";
 
@@ -12,6 +13,7 @@ const tabs = [
   { id: "copy", title: "Трейдеры", icon: Users },
   { id: "strategies", title: "Мои тесты", icon: WalletCards },
   { id: "combos", title: "Комбо", icon: Layers3 },
+  { id: "weather", title: "Погода", icon: CloudSun },
 ] as const;
 type Page = typeof tabs[number]["id"] | "settings";
 type TelegramApp = { initData: string; ready: () => void; expand: () => void; colorScheme?: string };
@@ -216,7 +218,7 @@ export function Workspace() {
     finally { setBusy(false); }
   };
   const wallets = data?.wallets.filter(w => (w.name + " " + w.address).toLowerCase().includes(search.trim().toLowerCase())) ?? [];
-  const titles = { history: "Журнал сделок", copy: "Трейдеры", strategies: "Мои тесты", combos: "Крупные комбо", settings: "Настройки" };
+  const titles = { history: "Журнал сделок", copy: "Трейдеры", strategies: "Мои тесты", combos: "Крупные комбо", weather: "Weather Lab", settings: "Настройки" };
   const monitor = data?.health.find(item => item.source === "neon");
   const upstream = data?.health.find(item => item.source === "polymarket");
   const healthy = !!monitor && Date.now() - Date.parse(monitor.at) < 180_000 && monitor.details.sections?.every(Boolean)
@@ -239,6 +241,7 @@ export function Workspace() {
             copy: "Выберите, чьи покупки отслеживать",
             strategies: "Отдельный виртуальный банк на каждый тест",
             combos: "Ставки трейдеров Polymarket от $2 000",
+            weather: "Температурные контракты и виртуальные сделки",
             settings: data?.user ? data.user.name : "Telegram и уведомления",
           }[page]}</p></div>
         {(page === "history" || page === "strategies") && <button className="action new-test" onClick={() => openStart()} disabled={loading}><Plus size={17} /> Новый тест</button>}
@@ -263,6 +266,7 @@ export function Workspace() {
             <p>Начните с трейдера и суммы, которую хотите проверить на виртуальных сделках.</p>
             <button className="action" onClick={() => openStart()}>Начать копировать</button></div>)}
         {page === "combos" && <ComboJournal />}
+        {page === "weather" && <WeatherLab authenticated={!!data?.user} />}
         {page === "settings" && <section className="section settings">
           <div><span><strong>Обновление сделок</strong><small>{healthy ? "Данные Polymarket обновляются" : "Обновление данных задерживается"}</small></span>
             <button className="text-action" onClick={refresh}>Обновить</button></div>
@@ -280,7 +284,7 @@ export function Workspace() {
         </section>}
       </>}
     </main>
-    <nav className="tabs" aria-label="Разделы">
+    <nav className="tabs tabs-five" aria-label="Разделы">
       {tabs.map(({ id, title, icon: Icon }) => <a key={id} href={"#" + id} aria-current={page === id ? "page" : undefined}
         onClick={e => { e.preventDefault(); navigate(id); }}><Icon size={21} aria-hidden="true" />{title}</a>)}
     </nav>

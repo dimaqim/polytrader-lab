@@ -7,9 +7,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 const script = fileURLToPath(import.meta.url);
 const root = dirname(dirname(script));
 const directory = join(root, ".collector");
-const lockPath = join(directory, "supervisor.pid");
-const logPath = join(directory, "collector.log");
-const jobPath = join(directory, "lab.polytrader.collector.plist");
+const weather = process.argv.includes("--weather");
+const suffix = weather ? "weather" : "collector";
+const lane = weather ? ["--weather"] : [];
+const lockPath = join(directory, weather ? "weather.pid" : "supervisor.pid");
+const logPath = join(directory, suffix + ".log");
+const jobPath = join(directory, "lab.polytrader." + suffix + ".plist");
 const command = process.argv[2];
 mkdirSync(directory, { recursive: true, mode: 0o700 });
 
@@ -17,8 +20,8 @@ function runningSupervisor() {
   try {
     const pid = Number(readFileSync(lockPath, "utf8"));
     if (!Number.isSafeInteger(pid) || pid <= 1) return null;
-    const commandLine = execFileSync("/bin/ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    return commandLine.includes(script + " supervise") ? pid : null;
+    const commandLine = execFileSync("/bin/ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return commandLine.includes(script + " supervise") && commandLine.endsWith(" --weather") === weather ? pid : null;
   } catch { return null; }
 }
 
@@ -33,6 +36,9 @@ async function supervise() {
     catch (race) { if (race.code === "EEXIST") return; throw race; }
   }
 
+  const awake = weather && process.platform === "darwin"
+    ? spawn("/usr/bin/caffeinate", ["-i", "-w", String(process.pid)], { stdio: "ignore" }) : undefined;
+  awake?.once("error", error => console.log(JSON.stringify({ event: "sleep_assertion_error", error: error.message })));
   const shutdown = new AbortController();
   let child;
   let deadline;
@@ -51,7 +57,7 @@ async function supervise() {
     let delay = 1_000;
     while (!shutdown.signal.aborted) {
       const started = Date.now();
-      child = spawn(process.execPath, ["--env-file-if-exists=.env.local", "scripts/collector.ts"], { cwd: root, stdio: "inherit" });
+      child = spawn(process.execPath, ["--env-file-if-exists=.env.local", weather ? "scripts/weather-collector.ts" : "scripts/collector.ts"], { cwd: root, stdio: "inherit" });
       const code = await new Promise(resolve => {
         child.once("exit", code => resolve(code));
         child.once("error", () => resolve(null));
@@ -66,6 +72,7 @@ async function supervise() {
       delay = Math.min(60_000, delay * 2);
     }
   } finally {
+    awake?.kill();
     if (readFileSync(lockPath, "utf8") === String(process.pid)) unlinkSync(lockPath);
   }
 }
@@ -79,7 +86,7 @@ if (command === "supervise") {
     if (existsSync(logPath) && statSync(logPath).size > 10_000_000) renameSync(logPath, logPath + ".1");
     const log = openSync(logPath, "a", 0o600);
     try {
-      const worker = spawn(process.execPath, [script, "supervise"], { cwd: root, detached: true, stdio: ["ignore", log, log] });
+      const worker = spawn(process.execPath, [script, "supervise", ...lane], { cwd: root, detached: true, stdio: ["ignore", log, log] });
       worker.unref();
     } finally { closeSync(log); }
     let pid = null;
@@ -100,17 +107,17 @@ if (command === "supervise") {
   console.log(pid ? "Collector running. PID " + pid : "Collector stopped.", "Log:", logPath);
   if (existsSync(logPath)) {
     const logs = readFileSync(logPath, "utf8").trimEnd().split("\n");
-    const heartbeat = logs.findLast(line => line.includes('"event":"heartbeat"'));
+    const heartbeat = logs.findLast(line => line.includes('"event":"heartbeat"') || line.includes('"source":"heartbeat"'));
     if (heartbeat) console.log(heartbeat);
   }
 } else if (command === "launchd") {
   const xml = value => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-  const argv = [process.execPath, script, "supervise"].map(value => "    <string>" + xml(value) + "</string>").join("\n");
+  const argv = [process.execPath, script, "supervise", ...lane].map(value => "    <string>" + xml(value) + "</string>").join("\n");
   writeFileSync(jobPath, `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>lab.polytrader.collector</string>
+  <key>Label</key><string>lab.polytrader.${suffix}</string>
   <key>ProgramArguments</key>
   <array>
 ${argv}

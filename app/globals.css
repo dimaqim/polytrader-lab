@@ -242,3 +242,28 @@ input:not([type=checkbox]), select {
 @media (max-width: 359px) {
   .combo-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+.tabs-five { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.weather, .weather-stack { display: grid; gap: 12px; min-width: 0; }
+.weather-top, .weather-actions, .weather-facts { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.weather-top { justify-content: space-between; }
+.weather-tabs { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 4px; }
+.weather-tabs button { overflow-wrap: anywhere; }
+.weather-stack h2 { font-weight: 850; font-size: 18px; }
+.weather h3 { font-size: 15px; font-weight: 850; overflow-wrap: anywhere; }
+.weather-empty { padding: 12px 4px; }
+.weather-facts, .weather-meta { margin: 7px 0; font-size: 12px; }
+.weather-facts { color: var(--muted); }
+.weather-meta svg { display: inline; vertical-align: -.16em; }
+.weather-market .trade-details { border-top: 1px solid var(--line); }
+.weather-rules { white-space: pre-line; overflow-wrap: anywhere; font-size: 13px; }
+.weather-selects { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
+.weather-stack label { display: grid; min-width: 0; gap: 5px; font-size: 12px; font-weight: 750; }
+.weather-address { overflow-wrap: anywhere; font-size: 12px; }
+.weather-outcomes { margin: 0; padding: 0; list-style: none; }
+.weather-outcomes li { padding: 7px 0; border-bottom: 1px solid var(--line); }
+.weather-outcomes small { display: block; }
+.weather-chart { min-width: 0; padding: 8px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--edge); }
+@media (max-width: 370px) {
+  .weather-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}

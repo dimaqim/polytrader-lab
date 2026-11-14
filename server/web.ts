@@ -1,3 +1,5 @@
+import { weatherDashboard } from "./weather/web.ts";
+import { changeExperiment, startExperiment } from "./weather/ledger.ts";
 import { seedWallet, strategies, walletPattern } from "../lib/strategies.ts";
 import { comboMoney, comboStates, type ComboRecord } from "../lib/combos.ts";
 import { activeStrategies } from "../lib/market-scope.ts";
@@ -139,6 +141,7 @@ export async function web(req: Request, route: string[]) {
     }
     if (req.method === "GET" && action === "combos") return await combosFor(new URL(req.url));
     const user = sessionUser(req);
+    if (req.method === "GET" && action === "weather") return json(await weatherDashboard(user));
     if (req.method === "GET" && action === "workspace") {
       if (!process.env.DATABASE_URL) return json({ error: "database_unconfigured" }, 503);
       return json(await dataFor(user));
@@ -172,6 +175,15 @@ export async function web(req: Request, route: string[]) {
       return rows.length ? json({ ok: true }, 200, sessionCookie(rows[0].user_id)) : json({ pending: true }, 202);
     }
     if (!user) return json({ error: "login_required" }, 401);
+    if (action === "weather/start") {
+      const id = await startExperiment(user);
+      return id ? json({ id }, 201) : json({ error: "weather_not_ready_or_active" }, 409);
+    }
+    if (action === "weather/control") {
+      if (typeof input.id !== "string" || !uuidPattern.test(input.id)
+        || !["running","paused","stopped"].includes(input.status)) return json({ error: "invalid_request" }, 400);
+      return await changeExperiment(user, input.id, input.status) ? json({ ok: true }) : json({ error: "experiment_inactive" }, 409);
+    }
     if (action === "experiments") return await startRun(user, input);
     if (action === "experiments/pause") {
       if (typeof input.id !== "string" || !uuidPattern.test(input.id) || typeof input.paused !== "boolean") {
