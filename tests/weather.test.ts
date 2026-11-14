@@ -1,3 +1,4 @@
+import { exitChecks, modelExit, replayEntry } from "../lib/weather/policy.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dayBounds, parseBucket, parseMetar, roundedTemperature, stations, exhaustive, verifyRules } from "../lib/weather/rules.ts";
@@ -100,4 +101,21 @@ test("REST recheck requires a distinct request sent after the delay and rejects 
   assert.equal(restRecheck(signal,rest("first",ready,end,ready),"token",ready,end),false);
   assert.equal(restRecheck(signal,rest("second",ready,end,end+1),"token",ready,end),false);
   assert.equal(restRecheck(signal,quote,"token",ready,end+6500),false);
+});
+
+test("copy entry needs a conservative edge after fees and caps the price against the wallet", () => {
+  assert.equal(replayEntry(.0829,.22,.21,.21,.025),false);
+  assert.equal(replayEntry(null,.45,.45,.44,.025),false);
+  assert.equal(replayEntry(.62,.58,.53,.578,.025),false);
+  assert.equal(replayEntry(.62,.475,.44,.46,.025),true);
+});
+
+test("model exit rejects a quick loss within the forecast range and rechecks the execution price", () => {
+  const input={model:{fair:.103,lower:0,upper:.28},basisPerShare:.208,shares:22,entryFair:.103};
+  assert.equal(modelExit({...input,net:.15328}),null);
+  assert.equal(modelExit({...input,basisPerShare:.30,net:.12,entryFair:.35}),"FORECAST_REVERSAL_RISK");
+  assert.equal(modelExit({...input,basisPerShare:.30,net:.20,entryFair:.35}),null);
+  const profit={model:{fair:.72887,lower:.54,upper:.88},basisPerShare:.73,shares:6.3,entryFair:.72887};
+  assert.equal(modelExit({...profit,net:.75}),"FAIR_VALUE_EXIT");
+  assert.equal(exitChecks({...profit,net:.748}).FAIR_VALUE_EXIT,false);
 });

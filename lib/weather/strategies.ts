@@ -1,4 +1,5 @@
 import { takerFee } from "../simulator.ts";
+import { replayEntry } from "./policy.ts";
 import { roundedTemperature } from "./rules.ts";
 import type { Contract, Estimate, WalletEvent, WeatherEvent } from "./types.ts";
 
@@ -47,8 +48,11 @@ export function candidates(event: WeatherEvent, current: Estimate, previous: Est
     const trades = wallet.filter(row => row.token === token && row.type === "TRADE" && row.side === "BUY" && row.at <= at
       && row.receivedAt <= at && at - row.receivedAt < 120_000 && row.price > 0 && row.price < 1);
     const latest = trades[0];
-    if (latest && Math.abs(quote.ask - latest.price) <= .04) for (const seconds of [5,15,30,60] as const) {
-      add(`replay_${seconds}`, "PUBLIC_WALLET_BUY", latest);
+    if (latest && current.confidence && Math.abs(quote.ask - latest.price) <= .04
+      && replayEntry(conservative,quote.ask+takerFee(1,quote.ask,contract.fee),latest.price,quote.ask,risk.edge)) {
+      for (const seconds of [5,15,30,60] as const) {
+        add(`replay_${seconds}`, "PUBLIC_WALLET_BUY", latest);
+      }
     }
     const obs = current.observation;
     if (!yes && current.observed != null && obs && at - obs.receivedAt < 120_000 && at - obs.observedAt < 3600_000) {

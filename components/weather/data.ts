@@ -12,7 +12,8 @@ export type Mark = { experiment:string;strategy:WeatherStrategy;token:string;sha
   depth:number;fill:PaperFill|null };
 export type Position = { experiment:string;strategy:WeatherStrategy;token:string;event:string;city:string;kind:string;outcome:string;
   shares:number;basis:number;realized:number;original_cost?:number;price:number|null;opened_at:string;closed_at:string|null };
-export type Evidence = { reason?:string;at?:number;candidate?:Candidate;estimate?:Estimate;delayMs?:number;readyAt?:number;source?:ExecutionSource;
+export type Evidence = { reason?:string;at?:number;policy?:string;fair?:number|null;modelUpper?:number;
+  executionFair?:number;executionUpper?:number;netPerShare?:number|null;basisPerShare?:number;entryFair?:number|null;candidate?:Candidate;estimate?:Estimate;delayMs?:number;readyAt?:number;source?:ExecutionSource;
   signalBook?:LiveBook;executionBook?:LiveBook;fill?:PaperFill;walletSell?:WalletEvent;payout?:number;checkedAt?:number };
 export type Fill = { id:string;experiment:string;strategy:WeatherStrategy;token:string;event:string;city:string;kind:string;outcome:string;
   side:"BUY"|"SELL"|"SETTLE";at:string;shares:number;gross:number;fee:number;basis:number;pnl:number|null;evidence:Evidence;source?:ExecutionSource };
@@ -58,6 +59,7 @@ export const reasons:Record<string,string>={
   SETTLEMENT_HOLD:"Последняя проверка дала решение удерживать до расчёта",PAPER_FILLED:"Виртуальная покупка исполнена",
   PAPER_PARTIAL:"Исполнена доступная часть",PAPER_SELL_FILLED:"Виртуальная продажа исполнена",SETTLED:"Рынок рассчитан",
   PRICE_MOVED:"Цена изменилась после сигнала",NO_LIQUIDITY_OR_MINIMUM:"Недостаточно объёма по подходящей цене",
+  COPY_EDGE_LOST:"Копирование пропущено: запаса после комиссии уже нет",EXIT_CONDITION_CHANGED:"Продажа пропущена: цена после задержки не подтвердила выход",
   RISK_REJECTED:"Ограничение риска или состояния теста",ENTRIES_PAUSED:"Новые входы приостановлены",
   PUBLIC_INVENTORY_UNVERIFIED:"Не подтверждён остаток позиции трейдера",COMPLETE_SET_MONITOR_ONLY:"Обнаружен комплект для наблюдения",
   CORRELATED_EVENT:"Этот банк уже использует связанный рынок станции и даты",DUPLICATE_POSITION:"Позиция по этому исходу уже была",

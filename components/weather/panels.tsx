@@ -109,6 +109,33 @@ function BookEvidence({evidence}:{evidence:Evidence}) {
     </div></details>
   </details>)}</>;
 }
+function SaleDetail({fill}:{fill:PositionDetail["fills"][number]}) {
+  const evidence=fill.evidence;
+  const net=fill.gross-fill.fee;
+  const sold=fill.side==="SELL";
+  const actualNet=net/fill.shares;
+  const basis=fill.basis/fill.shares;
+  const fair=evidence.executionFair??evidence.fair;
+  const upper=evidence.executionUpper??evidence.modelUpper;
+  return <section className="weather-sale">
+    <p><strong>{actionName[fill.side]} · {dateTime(fill.at)} по Киеву</strong></p>
+    <p>{sold?reasonText(evidence.reason??""):"Polymarket подтвердил выплату по исходу."}</p>
+    {sold&&evidence.reason==="FAIR_VALUE_EXIT"&&fair!=null&&<p>
+      Модель оценивала удержание в {price(fair)} за контракт. Доступная продажа принесла {price(actualNet)} после комиссии при себестоимости {price(basis)}.
+      {evidence.policy&&actualNet<basis&&upper!=null? " Для продажи в минус использована верхняя оценка модели "+price(upper)+".":""}
+    </p>}
+    {sold&&evidence.reason==="FORECAST_REVERSAL_RISK"&&<p>Оценка упала с {price(evidence.entryFair)} до {price(fair)}. Продажа ограничила дальнейший риск.</p>}
+    {sold&&evidence.reason==="REPRICING_TARGET"&&<p>Чистая цена вышла выше себестоимости на {price(actualNet-basis)} за контракт.</p>}
+    {sold&&evidence.walletSell&&<p>Обнаружена продажа кошелька {evidence.walletSell.name} по {price(evidence.walletSell.price)}.</p>}
+    <Facts items={[
+      [sold?"Цена продажи":"Выплата за контракт",price(fill.gross/fill.shares)],["Контракты",qty(fill.shares)],
+      ["Комиссия выхода",money(fill.fee)],["Получено чистыми",money(net)],
+      ["Себестоимость закрытой части",money(fill.basis)],["Зафиксировано",<Result value={fill.pnl}/>],
+    ]}/>
+    {sold&&evidence.fill?.partial&&<p>Исполнена доступная часть. Остаток продолжил отслеживаться.</p>}
+  </section>;
+}
+
 export function PositionPanel({detail,now,fillId,feedOnline}:{detail:PositionDetail;now:number;fillId?:string;feedOnline:boolean}) {
   const {position:p,fills,live,timeline}=detail;
   const open=p.closed_at==null;
@@ -137,8 +164,11 @@ export function PositionPanel({detail,now,fillId,feedOnline}:{detail:PositionDet
   return <>
     <section className="run"><h3>{kindName(p.market.kind)} · {p.outcome}</h3><p>{weatherStrategies[p.strategy]} · {open?"Открыта":"Закрыта"}</p>
       <a className="weather-link" href={marketUrl(p.market,contract?.slug)} target="_blank" rel="noreferrer">Открыть рынок на Polymarket <ArrowUpRight size={14}/></a>
-      {selected&&<div className="weather-inline"><strong>{actionName[selected.side]} · {dateTime(selected.at)}</strong><p>{price(selected.gross/selected.shares)} · {qty(selected.shares)} шт. · комиссия {money(selected.fee)}</p></div>}
+      {selected?.side==="BUY"&&<div className="weather-inline"><strong>{actionName[selected.side]} · {dateTime(selected.at)}</strong><p>{price(selected.gross/selected.shares)} · {qty(selected.shares)} шт. · комиссия {money(selected.fee)}</p></div>}
     </section>
+    {fills.some(fill=>fill.side!=="BUY")&&<section className="run"><h3>Почему закрыли позицию</h3>
+      {(selected&&selected.side!=="BUY"?[selected]:fills.filter(fill=>fill.side!=="BUY")).map(fill=><SaleDetail key={fill.id} fill={fill}/>)}
+    </section>}
     <section className="run"><h3>Деньги и контракты</h3><Facts items={[
       ["Вход по Киеву",buy?dateTime(buy.at):"Нет записи"],["Цена входа",buy?price(buy.gross/buy.shares):"—"],
       ["Куплено",buy?qty(buy.shares)+" шт.":"—"],["Покупка без комиссии",buy?money(buy.gross):"—"],["Комиссия покупки",buy?money(buy.fee):"—"],

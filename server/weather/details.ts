@@ -57,7 +57,7 @@ export async function weatherJournal(user:string, query:URLSearchParams) {
     where ${kind} in ('signals','skips') and (e.user_id=${user} or a.experiment is null)
       and (a.action='SKIP' or (a.action='BUY' and a.evidence ? 'candidate' and not (a.evidence ? 'executionBook')))
     union all
-    select f.id,f.experiment,f.strategy,f.token,p.event,f.at,f.side,p.outcome,(f.gross/f.shares)::float8,
+    select f.id,f.experiment,f.strategy,f.token,p.event,f.at,case when f.side='SELL' then coalesce(f.evidence->>'reason',f.side) else f.side end,p.outcome,(f.gross/f.shares)::float8,
       (f.gross+case when f.side='BUY' then f.fee else -f.fee end)::float8,f.pnl::float8,
       coalesce(f.evidence->>'source',case f.evidence->'executionBook'->'book'->>'source'
         when 'ws' then 'WEBSOCKET_L2' when 'rest' then 'REST_VERIFIED_PAPER' end),

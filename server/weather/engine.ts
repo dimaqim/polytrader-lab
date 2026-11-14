@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { database, date, log } from "../db.ts";
 import { takerFee } from "../../lib/simulator.ts";
+import { exitChecks, modelExit, replayEntry, saleModel, weatherPolicy, type ExitReason } from "../../lib/weather/policy.ts";
 import { estimate } from "../../lib/weather/probability.ts";
 import { executable, payoffTable, restAge, restFresh, restRecheck, takeDepth, type TradingSource } from "../../lib/weather/execution.ts";
 import { candidates, risk, weatherStrategies, type Candidate, type WeatherStrategy } from "../../lib/weather/strategies.ts";
@@ -15,11 +16,11 @@ import baseline from "../../lib/weather/calibration.json" with { type: "json" };
 
 type Bank = { experiment: string; strategy: WeatherStrategy; cash: number; exposure: number; running: boolean; risk_blocked: boolean; entries_revision:number };
 type Position = { experiment: string; strategy: WeatherStrategy; event: string; token: string; condition: string;
-  outcome: string; shares: number; basis: number; opened_at: string; source_wallet: string | null };
+  outcome: string; shares: number; basis: number; opened_at: string; source_wallet: string | null; entry_fair: number | null };
 type SourceHealth = { ok: boolean; at: number; count?: number; error?: string };
 type Pending = { bank: Bank; event: WeatherEvent; contract: Contract; token: string; outcome: string; side: "BUY" | "SELL";
   reference: number; reason: string; estimate: Estimate; readyAt: number; source: TradingSource; signalBook: LiveBook; evidence: object; shares?: number;
-  wallet?: WalletEvent; stake?: number };
+  wallet?: WalletEvent; position?: Position };
 
 const configuredAge = Number(process.env.WEATHER_BOOK_AGE_MS ?? risk.maxAge);
 const maximumAge = Number.isFinite(configuredAge) ? Math.min(5000, Math.max(250, configuredAge)) : risk.maxAge;
@@ -37,6 +38,7 @@ export class WeatherEngine {
   private readonly verifiedWallets = new Map<string, { name: string; address: string }>();
   private readonly data = new Map<string, WeatherEvent>();
   private readonly estimates = new Map<string, Estimate>();
+  private readonly latestEstimates = new Map<string, Estimate>();
   private readonly pending = new Map<string, Pending>();
   private readonly acted = new Set<string>();
   private positions: Position[] = [];
@@ -120,7 +122,7 @@ export class WeatherEngine {
     const events = await discover(Date.now(), held.map(row => row.payload as WeatherEvent));
     if (this.persist) await archiveEvents(events);
     const cutoff = Date.now() - 3 * 86400_000;
-    for (const [id, event] of this.data) if (event.end < cutoff && !held.some(x => x.payload.id === id)) this.data.delete(id);
+    for (const [id, event] of this.data) if (event.end < cutoff && !held.some(x => x.payload.id === id)) { this.data.delete(id); this.estimates.delete(id); this.latestEstimates.delete(id); }
     for (const event of events) this.data.set(event.id, event);
     const heldIds = new Set([...this.positions.map(p => p.event), ...held.map(row => row.payload.id)]);
     const open = [...this.data.values()].filter(event => event.verified && Date.now() - event.receivedAt < 15 * minute
@@ -229,8 +231,9 @@ export class WeatherEngine {
           and strategy=b.strategy and shares>0) p on true
         where (e.ends_at>now() and e.status<>'stopped') or p.exposure>0`,
       sql`select p.experiment,p.strategy,p.event,p.token,p.condition,p.outcome,p.shares::float8,p.basis::float8,p.opened_at,
-        source.source_wallet from weather.positions p left join lateral (
-          select f.evidence->'candidate'->'wallet'->>'wallet' source_wallet from weather.fills f
+        source.source_wallet,source.entry_fair from weather.positions p left join lateral (
+          select f.evidence->'candidate'->'wallet'->>'wallet' source_wallet,
+            (f.evidence->'candidate'->>'probability')::float8 entry_fair from weather.fills f
           where f.experiment=p.experiment and f.strategy=p.strategy and f.token=p.token and f.side='BUY' limit 1
         ) source on true where p.shares>0`,
     ]) : [[],[]];
@@ -263,6 +266,7 @@ export class WeatherEngine {
       }
       const prior = this.estimates.get(event.id);
       const cur = estimate(event,[...this.snapshots.values()],[...this.readings.values()],calibrations(baseline,event,at),mids,at);
+      this.latestEstimates.set(event.id,cur);
       if (!prior || cur.forecasts.map(x=>x.hash).join() !== prior.forecasts.map(x=>x.hash).join() || at - prior.at > 15 * minute) {
         this.estimates.set(event.id,cur);
       }
@@ -323,7 +327,7 @@ export class WeatherEngine {
 
   private async queue(id: string, bank: Bank, event: WeatherEvent, c: Candidate, current: Estimate, signalBook: LiveBook, at: number) {
     const delay = c.strategy.startsWith("replay_") ? Number(c.strategy.split("_")[1]) * 1000 : risk.delay;
-    const evidence = { signalBook, candidate: c, estimate: current, delay, at };
+    const evidence = { signalBook, candidate: c, estimate: current, delay, at, policy:weatherPolicy };
     await audit({ experiment:bank.experiment,strategy:bank.strategy,event:event.id,token:c.token,action:"BUY",
       reason:c.reason,evidence,key:String(Math.floor(at/minute)) });
     this.pending.set(id,{ bank,event,contract:c.contract,token:c.token,outcome:(c.yes ? "YES " : "NO ") + c.contract.bucket.label,
@@ -352,24 +356,25 @@ export class WeatherEngine {
       }
       const quote = quotes.get(position.token), book = books.get(position.token);
       if (!c.open || !c.fee || !quote || !book) continue;
-      const p = cur.distribution.find(x => x.condition === c.condition);
-      const fair = p && cur.confidence ? (yes ? p.p : 1-p.p) : null;
+      const model = saleModel(cur,c,position.token);
       const afterFees = quote.bid - takerFee(1,quote.bid,c.fee);
       const walletSell = !book.rest && position.strategy.startsWith("replay_") ? wallet.find(row => row.type === "TRADE" && row.side === "SELL"
-        && row.wallet === position.source_wallet && row.token === position.token && row.receivedAt > +new Date(position.opened_at) && at - row.receivedAt < 120_000) : undefined;
-      const riskCash = position.basis - position.shares * afterFees;
-      const reason = walletSell ? "PUBLIC_WALLET_SELL" : fair != null && afterFees >= fair + .02 ? "FAIR_VALUE_EXIT"
-        : fair != null && riskCash >= 2.5 && fair < position.basis / position.shares - .15 ? "FORECAST_REVERSAL_RISK"
-        : fair != null && afterFees >= position.basis / position.shares + .04 && afterFees >= fair - .01 ? "REPRICING_TARGET" : null;
+        && row.wallet === position.source_wallet && row.token === position.token && row.at > +new Date(position.opened_at)
+        && row.receivedAt > +new Date(position.opened_at) && at - row.receivedAt < 120_000) : undefined;
+      const basisPerShare = position.basis / position.shares;
+      const reason = walletSell ? "PUBLIC_WALLET_SELL" : model && modelExit({
+        model,net:afterFees,basisPerShare,shares:position.shares,entryFair:position.entry_fair,
+      });
       const bank = { ...position, cash:0, exposure:0, running:false, risk_blocked:false, entries_revision:0 };
       const id = [position.experiment,position.strategy,position.token,"SELL"].join("/");
       if (!reason) {
         if (at >= this.persistAt) await audit({ experiment:position.experiment,strategy:position.strategy,event:event.id,token:position.token,
-          action:"HOLD",reason:"SETTLEMENT_HOLD",evidence:{ fair,afterFees },key:String(Math.floor(at/(5*minute))) });
+          action:"HOLD",reason:"SETTLEMENT_HOLD",evidence:{fair:model?.fair??null,afterFees,basisPerShare,modelUpper:model?.upper,policy:weatherPolicy,at},key:String(Math.floor(at/(5*minute))) });
         continue;
       }
       if (this.pending.has(id) || (walletSell && this.acted.has(walletSell.id + id))) continue;
-      const evidence = { signalBook:book, estimate:cur,fair, priorBasis:position.basis, walletSell, at };
+      const evidence = { signalBook:book, estimate:cur,fair:model?.fair??null, modelUpper:model?.upper, afterFees, basisPerShare,
+        priorBasis:position.basis, entryFair:position.entry_fair, walletSell, at, policy:weatherPolicy };
       const delay = walletSell ? Number(position.strategy.split("_")[1])*1000 : risk.delay;
       const walletInventory = walletSell ? wallet.filter(r => r.wallet === walletSell.wallet && r.token === position.token && r.receivedAt < walletSell.receivedAt) : [];
       const knownInventory = walletInventory.reduce((sum, row) => sum + (row.side === "BUY" ? row.shares : row.side === "SELL" ? -row.shares : 0),0);
@@ -382,7 +387,7 @@ export class WeatherEngine {
       await audit({ experiment:position.experiment,strategy:position.strategy,event:event.id,token:position.token,
         action:"SELL",reason,evidence,key:walletSell?.id ?? String(Math.floor(at/minute)) });
       this.pending.set(id,{ bank,event,contract:c,token:position.token,outcome:position.outcome,side:"SELL",reference:quote.bid,reason,
-        estimate:cur,readyAt:at+delay,source:book.rest?"REST_VERIFIED_PAPER":"WEBSOCKET_L2",signalBook:book,evidence,shares:walletSell ? position.shares * Math.min(1,walletSell.shares/knownInventory) : position.shares,wallet:walletSell });
+        estimate:cur,readyAt:at+delay,source:book.rest?"REST_VERIFIED_PAPER":"WEBSOCKET_L2",signalBook:book,evidence,position,shares:walletSell ? position.shares * Math.min(1,walletSell.shares/knownInventory) : position.shares,wallet:walletSell });
     }
   }
 
@@ -449,15 +454,35 @@ export class WeatherEngine {
     }
     this.pending.delete(id);
     const fee = c.fee;
-    const target = row.side === "BUY" ? Math.min(.999,row.reference+.015) : Math.max(.001,row.reference-.015);
+    const replay = row.side === "BUY" && row.bank.strategy.startsWith("replay_");
+    const target = row.side === "BUY"
+      ? Math.min(.999,row.reference+.015,replay && row.wallet ? row.wallet.price+.04 : 1)
+      : Math.max(.001,row.reference-.015);
     const budget = row.side === "BUY" ? Math.min(risk.cost,row.bank.cash,risk.exposure-row.bank.exposure) : row.shares!;
     const fill = takeDepth(quote,{minimum:quote.rest?.minimum??c.minimum,tick:quote.rest?.tick??this.ws.tickSize(row.token,c.tick)},row.side,budget,target,fee);
     const edge = row.side === "BUY" && row.bank.strategy !== "favorite" && !row.bank.strategy.startsWith("replay_")
       ? (row.evidence as { candidate?: Candidate }).candidate?.conservative : null;
+    const latest = this.latestEstimates.get(row.event.id);
+    const model = latest && at - latest.at <= 20_000 ? saleModel(latest,c,row.token) : null;
+    const netPerShare = fill && row.side === "SELL" ? (fill.gross-fill.fee)/fill.shares : null;
     const evidence = { ...row.evidence, reason:row.reason,source:row.source, entriesRevision:row.bank.entries_revision, executionBook:quote, fill, fee, readyAt:row.readyAt,
-      expiresAt:quote.book.sourceAt+age, delayMs:quote.book.receivedAt - (row.evidence as { at?:number }).at! };
-    if (!fill || (edge != null && edge - (fill.gross+fill.fee)/fill.shares < risk.edge)) {
-      await audit({ ...begin,action:"SKIP",reason:fill ? "PRICE_MOVED" : "NO_LIQUIDITY_OR_MINIMUM",evidence });
+      expiresAt:quote.book.sourceAt+age, delayMs:quote.book.receivedAt - (row.evidence as { at?:number }).at!,
+      executionFair:model?.fair, executionUpper:model?.upper, executionLower:model?.lower, netPerShare };
+    let rejection: string | null = null;
+    if (!fill) rejection = "NO_LIQUIDITY_OR_MINIMUM";
+    else if (edge != null && edge - (fill.gross+fill.fee)/fill.shares < risk.edge) rejection = "PRICE_MOVED";
+    else if (replay && (!row.wallet || at-row.wallet.receivedAt>=120_000
+      || !replayEntry(model?.lower??null,(fill.gross+fill.fee)/fill.shares,row.wallet.price,fill.price,risk.edge))) {
+      rejection = "COPY_EDGE_LOST";
+    } else if (row.side==="SELL" && row.reason!=="PUBLIC_WALLET_SELL" && netPerShare!=null) {
+      const position = row.position!;
+      const basisPerShare = position.basis/position.shares;
+      if (!model || !exitChecks({model,net:netPerShare,basisPerShare,shares:fill.shares,entryFair:position.entry_fair})[row.reason as ExitReason]) {
+        rejection = "EXIT_CONDITION_CHANGED";
+      }
+    }
+    if (rejection || !fill) {
+      await audit({ ...begin,action:"SKIP",reason:rejection??"NO_LIQUIDITY_OR_MINIMUM",evidence });
       return;
     }
     const status = await postFill({ experiment:row.bank.experiment,strategy:row.bank.strategy,token:row.token,
@@ -505,7 +530,7 @@ export class WeatherEngine {
     const ready = this.running && source!=="NO_EXECUTABLE_DATA"
       && [["catalog",15*minute],["metar",3*minute],["forecast",25*minute],["engine",minute]].every(([key,age])=>
         this.sources[String(key)]?.ok && at-this.sources[String(key)].at<Number(age)) && markets.some(event=>event.verified && event.contracts.some(c=>c.open));
-    const details = { ready, source, process:this.running, ws, rest:{lastResponse:this.rest.lastResponse||null,error:this.rest.lastError||null}, sources:this.sources, cities:[...new Set(markets.map(e=>e.station.city))] };
+    const details = { ready, source, policy:weatherPolicy, process:this.running, ws, rest:{lastResponse:this.rest.lastResponse||null,error:this.rest.lastError||null}, sources:this.sources, cities:[...new Set(markets.map(e=>e.station.city))] };
     this.report("heartbeat", { ...details, observedAt: at });
     if (this.persist) await state("readiness",details);
     return markets.length;
