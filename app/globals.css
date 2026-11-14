@@ -339,3 +339,16 @@ input:not([type=checkbox]), select {
   .weather-filter .weather-selects { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
 @media(min-width:700px) { .weather-sheet { inset:3dvh 0 auto; border-radius:14px; } }
+.weather-comparison-table { display:none; padding:0; }
+.weather-comparison-table table { width:100%; border-collapse:collapse; font-size:12px; text-align:right; font-variant-numeric:tabular-nums; }
+.weather-comparison-table :is(td,th) { padding:7px; border-bottom:1px solid var(--line); }
+.weather-comparison-table thead th { color:var(--muted); }
+.weather-comparison-table th:first-child { text-align:left; }
+.weather-comparison-table tbody th { width:29%; }
+.weather-comparison-table tbody th button { text-align:left; min-height:32px; padding:2px 0; }
+.weather-comparison-table tbody small { display:block; font-weight:600; }
+.weather-comparison-table tbody tr:last-child > * { border-bottom:0; }
+@media(min-width:760px) {
+  .weather-comparison-table { display:block; }
+  .weather-comparison { display:none; }
+}

@@ -36,6 +36,7 @@ export function Dashboard({feed,run,banks,now,authenticated,busy,mutate,openPosi
   const subtotal=unrealized.every(p=>p!=null)?unrealized.reduce<number>((sum,x)=>sum+(x??0),0):null;
   const sum=(key:"cash"|"initial"|"locked"|"realized")=>banks.reduce((total,b)=>total+b[key],0);
   const source=online?feed.readiness?.payload.source:undefined;
+  const lastMark=Math.max(0,...feed.marks.filter(mark=>mark.experiment===run?.id).map(mark=>mark.at));
   return <div className="weather-stack">
     <section className="run weather-overview"><div className="weather-overview-title">
       <div><h2>Виртуальная торговля</h2><p>{run ? "14-дневный эксперимент" : "Эксперимент Weather Lab"}</p></div>
@@ -58,6 +59,7 @@ export function Dashboard({feed,run,banks,now,authenticated,busy,mutate,openPosi
       ["Реализовано",<Result value={sum("realized")}/>],["PnL открытых позиций",<Result value={subtotal}/>],
       ["Общий PnL",<Result value={subtotal==null?null:subtotal+sum("realized")}/>],
     ]}/><p className="muted">Сумма {banks.length} независимых банков по {money(banks[0].initial)}. Стратегии могут входить в один рынок параллельно.</p>
+      {lastMark>0&&<p className="muted">Оценка продажи по проверенному стакану от {dateTime(lastMark)} по Киеву.</p>}
       <EquityChart rows={equitySeries(feed,run!.id,banks.map(b=>b.strategy))}/></section>}
     <section className="weather-stack"><h3 className="weather-section-title">Открытые позиции</h3>
       {feed.positions.length?<div className="run weather-rows">{feed.positions.slice(0,6).map(p=><Row key={p.experiment+"/"+p.strategy+"/"+p.token}
@@ -82,12 +84,22 @@ export function Dashboard({feed,run,banks,now,authenticated,busy,mutate,openPosi
 }
 export function StrategyResults({feed,run,banks,now,open}:{feed:Feed;run?:Run;banks:Bank[];now:number;open:(id:WeatherStrategy)=>void}) {
   if(!banks.length)return <Empty>Сравнение появится после запуска эксперимента.</Empty>;
+  const summary=banks.map(bank=>({bank,...metrics(bank,feed,now),status:strategyStatus(bank.strategy,bank,run,feed,now)}));
   return <div className="weather-stack">
     <p className="muted">У каждой стратегии свой банк. ROI считается от её стартового банка. Пока недостаточно независимых завершённых сделок для оценки прибыльности стратегии.</p>
-    <div className="weather-comparison">{banks.map(bank=>{
-      const {unrealized,total}=metrics(bank,feed,now);
+    <div className="weather-comparison-table run"><table>
+      <caption className="sr-only">Сравнение виртуальных банков</caption>
+      <thead><tr><th scope="col">Стратегия</th><th scope="col">Вложено</th><th scope="col">Реализовано</th>
+        <th scope="col">Открытый PnL</th><th scope="col">Общий PnL</th><th scope="col">ROI</th><th scope="col">Открыто / покупки / продажи</th></tr></thead>
+      <tbody>{summary.map(({bank,unrealized,total,status})=><tr key={bank.strategy}>
+        <th scope="row"><button className="text-action" onClick={()=>open(bank.strategy)}>{weatherStrategies[bank.strategy]}</button><small>{status}</small></th>
+        <td>{money(bank.locked)}</td><td><Result value={bank.realized}/></td><td><Result value={unrealized}/></td><td><Result value={total}/></td>
+        <td>{total==null?"Нет оценки":pct(total/bank.initial)}</td><td>{bank.open} / {bank.buys} / {bank.sells}</td>
+      </tr>)}</tbody>
+    </table></div>
+    <div className="weather-comparison">{summary.map(({bank,unrealized,total,status})=>{
       return <article className="run weather-comparison-row" key={bank.strategy}>
-        <Row title={weatherStrategies[bank.strategy]} note={strategyStatus(bank.strategy,bank,run,feed,now)} onClick={()=>open(bank.strategy)}/>
+        <Row title={weatherStrategies[bank.strategy]} note={status} onClick={()=>open(bank.strategy)}/>
         <Facts items={[["Вложено",money(bank.locked)],["Открыто",bank.open],["Реализовано",<Result value={bank.realized}/>],
           ["Нереализовано",<Result value={unrealized}/>],["Общий PnL",<Result value={total}/>],["ROI",total==null?"Нет оценки":pct(total/bank.initial)],
           ["Покупки / продажи",bank.buys+" / "+bank.sells]]}/>
