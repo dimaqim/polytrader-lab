@@ -9,6 +9,9 @@ import { tradingReports } from "./reporting.ts";
 import { scanCombos } from "./combos.ts";
 
 const minute = 60_000;
+// Large historical wallet backfills must be explicitly opted into. The live copy
+// scanner remains functional without writing every historical activity to Neon.
+const neonWalletHistoryArchive = process.env.NEON_WALLET_ACTIVITY_ARCHIVE === "true";
 const activityId = (a: Activity) => String(a.id ?? a.sequence_id ?? createHash("sha256").update(JSON.stringify([
   a.transaction_hash, a.type, a.condition_id, a.token_id ?? a.asset, a.side, a.timestamp, a.price, a.size, a.usdc_size,
 ])).digest("hex"));
@@ -181,7 +184,7 @@ export async function runWorker(slot: number, daily = false) {
     const jobs = [
       protect("copy", async () => {
         const wallets = await sql`select distinct wallet from lab.experiments where strategy='copy' and not paused and not risk_blocked and ends_at>now() and wallet is not null limit 8`;
-        const saveArchive = wallets.length > 0 && await archiveHasSpace();
+        const saveArchive = neonWalletHistoryArchive && wallets.length > 0 && await archiveHasSpace();
         let failed = 0;
         for (const { wallet } of wallets) if (!await protect("copy_wallet", () => scanCopy(wallet, saveArchive))) failed++;
         if (failed) throw new Error("Some watched wallets could not be checked");
@@ -199,7 +202,8 @@ export async function runWorker(slot: number, daily = false) {
       and least(s.expires_at,e.ends_at)<=now()`;
     for (let i = 0; i < 12; i++) if (!await executeDecision(undefined, "copy")) break;
     if (Math.floor(slot / minute) % 5 === 0) {
-      await Promise.all([protect("service_health", checkServices), protect("wallet_history", backfillHistory)]);
+      await protect("service_health", checkServices);
+      if (neonWalletHistoryArchive) await protect("wallet_history", backfillHistory);
     }
     await protect("experiment_notifications", experimentNotifications);
     await sql`insert into lab.heartbeats(source,at,details) values('neon',now(),${JSON.stringify({ sections: health })})
