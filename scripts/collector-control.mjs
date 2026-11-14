@@ -107,7 +107,8 @@ if (command === "supervise") {
   console.log(pid ? "Collector running. PID " + pid : "Collector stopped.", "Log:", logPath);
   if (existsSync(logPath)) {
     const logs = readFileSync(logPath, "utf8").trimEnd().split("\n");
-    const heartbeat = logs.findLast(line => line.includes('"event":"heartbeat"') || line.includes('"source":"heartbeat"'));
+    const heartbeat = logs.findLast(line => line.includes('"event":"heartbeat"') || line.includes('"source":"heartbeat"')
+      || (weather && line.startsWith('{') && line.includes('"ready":') && line.includes('"observedAt":')));
     if (heartbeat) console.log(heartbeat);
   }
 } else if (command === "launchd") {

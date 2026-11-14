@@ -450,6 +450,7 @@ export class WeatherEngine {
   }
 
   private async executePending(id:string,row:Pending) {
+    if (!this.running) return;
     const c = this.data.get(row.event.id)?.contracts.find(current => current.condition === row.contract.condition);
     const begin = { experiment:row.bank.experiment,strategy:row.bank.strategy,event:row.event.id,token:row.token,
       action:row.side,key:row.wallet?.id ?? String(row.readyAt) };
@@ -493,7 +494,7 @@ export class WeatherEngine {
     const latest = this.latestEstimates.get(row.event.id);
     const model = latest && at - latest.at <= 20_000 ? saleModel(latest,c,row.token) : null;
     const requiresModel = row.side === "BUY" && row.bank.strategy !== "favorite" && row.bank.strategy !== "observation";
-    const edge = row.side !== "BUY" ? null : row.bank.strategy === "observation" ? candidate?.conservative : model?.lower;
+    const edge = requiresModel ? model?.lower : row.side === "BUY" && row.bank.strategy === "observation" ? candidate?.conservative : null;
     const netPerShare = fill && row.side === "SELL" ? (fill.gross-fill.fee)/fill.shares : null;
     const evidence = { ...row.evidence, reason:row.reason,source, entriesRevision:row.bank.entries_revision, executionBook:quote, fill, fee, readyAt:row.readyAt,
       expiresAt:quote.book.sourceAt+age, delayMs:quote.book.receivedAt - (row.evidence as { at?:number }).at!,
