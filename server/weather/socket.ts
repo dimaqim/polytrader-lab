@@ -230,6 +230,7 @@ export class WeatherSocket {
     const book = this.feed?.book(token);
     return session && book && !Number.isNaN(this.ticks.get(token)) ? { session, book } : undefined;
   }
+  tracks(token: string) { return this.target.has(token); }
   tickSize(token: string, fallback: number) { return this.ticks.get(token) ?? fallback; }
   status() {
     return { process: true, socket: !!this.activeSession, subscribed: this.subscribed.size, ...this.counts,

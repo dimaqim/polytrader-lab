@@ -119,3 +119,14 @@ test("model exit rejects a quick loss within the forecast range and rechecks the
   assert.equal(modelExit({...profit,net:.75}),"FAIR_VALUE_EXIT");
   assert.equal(exitChecks({...profit,net:.748}).FAIR_VALUE_EXIT,false);
 });
+
+test("available buyers can fill a sale even when the sellers' side is empty", () => {
+  const quote = {
+    session:"session", book:{asset:"token",source:"ws" as const,sourceAt:1000,receivedAt:1000,
+      bids:[{price:.6,size:3},{price:.5,size:2}],asks:[]},
+  };
+  const fill = takeDepth(quote,{tick:.01,minimum:5},"SELL",7,.5,{rate:.05,exponent:1});
+  assert.equal(fill?.shares,5);
+  assert.equal(fill?.partial,true);
+  assert.ok(Math.abs((fill?.gross??0)-(fill?.fee??0)-2.739)<.001);
+});

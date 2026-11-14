@@ -3,7 +3,7 @@ import { ArrowUpRight } from "lucide-react";
 import { takerFee } from "../../lib/simulator";
 import type { Contract, WalletEvent, WeatherEvent } from "../../lib/weather/types";
 import { dateTime, walletLink } from "../trade-journal";
-import { cityName,kindName,marketUrl,modelName,pct,price,qty,sourceName,timeLeft,type Quote,type View } from "./data";
+import { cityName,kindName,marketDay,marketUrl,modelName,pct,price,qty,quoteIssue,sourceName,timeLeft,type Quote,type View } from "./data";
 import { Empty } from "./panels";
 import { glossary } from "./education";
 
@@ -14,8 +14,8 @@ export function MarketCard({event,live,held,now}:{event:WeatherEvent;live?:View;
   const displayed=all?ranked:ranked.filter((c,i)=>{
     const row=live?.distribution.find(p=>p.condition===c.condition);
     const book=live?.books.find(b=>b.condition===c.condition);
-    const yes=book?.yes?.at!=null&&now-book.yes.at<=75_000?book.yes.ask:null;
-    const no=book?.no?.at!=null&&now-book.no.at<=75_000?book.no.ask:null;
+    const yes=book?.yes&&!quoteIssue(book.yes,now)?book.yes.ask:null;
+    const no=book?.no&&!quoteIssue(book.no,now)?book.no.ask:null;
     const edge=row&&c.fee&&live?.confidence&&(
       yes!=null&&row.low-yes-takerFee(1,yes,c.fee)>.045 || no!=null&&1-row.high-no-takerFee(1,no,c.fee)>.045);
     return i<3||edge||held.includes(c.yes)||held.includes(c.no);
@@ -25,8 +25,8 @@ export function MarketCard({event,live,held,now}:{event:WeatherEvent;live?:View;
   const mostLikely=ranked[0];
   const range=mostLikely&&live?.distribution.length?mostLikely.bucket.label:"Ожидается прогноз";
   return <article className="run weather-market">
-    <header><div><h3>{cityName(event.station.city)}</h3><p>{kindName(event.kind)} · <time dateTime={event.date}>{new Date(event.date+"T12:00:00Z").toLocaleDateString("ru",{day:"numeric",month:"long",timeZone:"UTC"})}</time></p></div>
-      <span className={"trade-state "+(event.verified?"active":"loss")}>{event.verified?(live?.confidence?"Оценка готова":"Наблюдение"):"Правила проверяются"}</span></header>
+    <header><div><h3>{cityName(event.station.city)}</h3><p>{kindName(event.kind)} · <time dateTime={event.date}>{marketDay(event.date)}</time></p></div>
+      <span className={"trade-state "+(event.verified?"active":"loss")}>{event.verified?(live?.confidence?"Прогноз готов":"Наблюдение"):"Правила проверяются"}</span></header>
     <div className="weather-kpis weather-market-facts">
       <div><small>Станция</small><strong>{event.station.code}</strong></div>
       <div><small>{event.kind==="highest"?"Измеренный максимум":"Измеренный минимум"}</small><strong>{live?.observed==null?"Нет замера":live.observed.toFixed(1)+" °C"}</strong></div>
@@ -59,25 +59,33 @@ export function MarketCard({event,live,held,now}:{event:WeatherEvent;live?:View;
 function Outcome({contract:c,live,now,held}:{contract:Contract;live?:View;now:number;held:string[]}) {
   const p=live?.distribution.find(row=>row.condition===c.condition);
   const pair=live?.books.find(row=>row.condition===c.condition);
-  const fresh=(q:Quote|undefined)=>q && (q.at!=null ? now-q.at<=75_000 && q.at<=now : false)?q:undefined;
-  const yes=fresh(pair?.yes),no=fresh(pair?.no);
-  const old=(!yes&&pair?.yes?.at!=null)||(!no&&pair?.no?.at!=null);
-  const advantage=(q:Quote|undefined,probability:number|undefined)=>q?.ask!=null && probability!=null && c.fee
-    ?price(probability-q.ask-takerFee(1,q.ask,c.fee)):null;
+  const coverage=live?.marketCoverage;
+  const yesIssue=quoteIssue(pair?.yes,now);
+  const noIssue=quoteIssue(pair?.no,now);
+  const marketIssue = coverage && coverage.priced<coverage.total
+    ? "Свежие цены покупки и продажи есть у "+coverage.priced+" из "+coverage.total+" исходов."
+    : coverage && !coverage.coherent ? "Цены разных исходов пришли из разных источников."
+    : p?.market!=null ? "Последняя рыночная оценка устарела."
+    : coverage ? "Цены исходов не прошли проверку общего распределения."
+    : "Для рыночной оценки нужны свежие цены покупки и продажи всех исходов.";
   return <details className="weather-outcome"><summary>
     <span><strong>{c.bucket.label}</strong>{held.includes(c.yes)||held.includes(c.no)?<small> · Есть позиция</small>:null}</span>
     <span>{pct(p?.p)}</span></summary>
-    <p>По погодной модели · {pct(p?.p)}</p><p>По Polymarket · {p?.market==null?"Нет актуальной оценки":pct(p.market)}</p>
-    <p>Комбинированная · {p?.blended==null?"Недоступна":pct(p.blended)}</p>
-    {[["YES",yes,p?.low],["NO",no,p?1-p.high:undefined]].map(([side,q,bound])=>{
-      const quote=q as Quote|undefined;
-      const ev=advantage(quote,bound as number|undefined);
-      return <p key={String(side)}>{String(side)} · покупка {price(quote?.ask)} · продажа {price(quote?.bid)}{ev?" · преимущество "+ev:""}
-        {quote?.source&&<small> {sourceName[quote.source]} · {dateTime(quote.at!)}</small>}</p>;
-    })}
-    {(!yes||!no)&&<p className="muted">{c.open?"Для "+[!yes&&"YES",!no&&"NO"].filter(Boolean).join(" и ")+" нет актуального стакана. Подтвердить цену нельзя."+(old?" Последний снимок устарел.":""):"Рынок больше не принимает заявки."}</p>}
-    {yes&&no&&(yes.ask==null||no.ask==null||yes.bid==null||no.bid==null)&&<p className="muted">На отдельных сторонах книги сейчас нет заявок.</p>}
+    <p><strong>Прогноз погоды</strong> · {pct(p?.p)}</p>
+    {p?.market!=null && live && now-live.at<=75_000
+      ? <p>Оценка по ценам рынка · {pct(p.market)} · Комбинированная · {pct(p.blended)}</p>
+      : <p className="muted">Рыночная и комбинированная оценки пока недоступны. {marketIssue}</p>}
+    {yesIssue&&yesIssue===noIssue ? <p className="weather-inline">{yesIssue}. Цены YES и NO пока не подтверждены.</p> :
+      ([["YES",pair?.yes,yesIssue],["NO",pair?.no,noIssue]] as const).map(([side,quote,issue])=>
+        <OutcomeQuote key={side} side={side} quote={quote} issue={issue}/>)}
   </details>;
+}
+function OutcomeQuote({side,quote,issue}:{side:string;quote?:Quote;issue:string|null}) {
+  return <p><strong>{side}</strong> · {issue ? issue :
+    (quote?.ask==null?"Продавцов нет":"Купить за "+price(quote.ask))+" · "+
+    (quote?.bid==null?"Покупателей нет":"Продать за "+price(quote.bid))}
+    {!issue&&quote?.source&&quote.at!=null&&<small> · {sourceName[quote.source]} · {dateTime(quote.at)}</small>}
+  </p>;
 }
 export function Wallets({wallets,events,markets}:{wallets:{name:string;address:string}[];events:WalletEvent[];markets:WeatherEvent[]}) {
   return <div className="weather-stack"><div className="run"><h3>Как используются кошельки</h3>

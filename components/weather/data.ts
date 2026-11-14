@@ -7,12 +7,27 @@ export type Run = { id:string; status:string; starts_at:string; ends_at:string; 
 export type Bank = { experiment:string; strategy:WeatherStrategy; cash:number; initial:number; realized:number; max_drawdown:number;
   risk_blocked:boolean; entries_paused:boolean; total:number; last:string|null; last_reason:string|null;
   locked:number; open:number; events:number; wins:number; closed:number; fees:number; buys:number; sells:number };
-export type Quote = { bid:number|null;ask:number|null;at?:number;source?:ExecutionSource };
+export type QuoteStatus="FRESH"|"STALE"|"WAITING"|"NOT_TRACKED"|"CLOSED"|"FEE_UNKNOWN";
+export type Quote = { bid:number|null;ask:number|null;at?:number|null;source?:ExecutionSource|null;status?:QuoteStatus };
+export const quoteStatusText:Record<Exclude<QuoteStatus,"FRESH">,string>={
+  STALE:"Последняя котировка устарела",
+  WAITING:"Polymarket пока не прислал стакан для этого контракта",
+  NOT_TRACKED:"Контракт вне текущей подписки",
+  CLOSED:"Рынок уже закрыл торги",
+  FEE_UNKNOWN:"Ставка комиссии пока не подтверждена",
+};
+export function quoteIssue(q:Quote|undefined,now:number) {
+  if (!q) return "Свежий стакан по этому контракту не получен";
+  if (q.status&&q.status!=="FRESH") return quoteStatusText[q.status];
+  if (q.at==null) return "Свежий стакан по этому контракту не получен";
+  if (now-q.at>75_000||q.at>now) return quoteStatusText.STALE;
+  return null;
+}
 export type Mark = { experiment:string;strategy:WeatherStrategy;token:string;shares:number;basis:number;at:number;quote:Quote;
-  depth:number;fill:PaperFill|null };
+  depth:number|null;fill:PaperFill|null;reason?:string|null;minimum?:number|null };
 export type Position = { experiment:string;strategy:WeatherStrategy;token:string;event:string;city:string;kind:string;outcome:string;
-  shares:number;basis:number;realized:number;original_cost?:number;price:number|null;opened_at:string;closed_at:string|null };
-export type Evidence = { reason?:string;at?:number;policy?:string;fair?:number|null;modelUpper?:number;
+  shares:number;basis:number;realized:number;original_cost?:number;price:number|null;opened_at:string;closed_at:string|null;market_day?:string;market_end?:number };
+export type Evidence = { compact?:boolean;reason?:string;at?:number;policy?:string;fair?:number|null;modelUpper?:number;
   executionFair?:number;executionUpper?:number;netPerShare?:number|null;basisPerShare?:number;entryFair?:number|null;candidate?:Candidate;estimate?:Estimate;delayMs?:number;readyAt?:number;source?:ExecutionSource;
   signalBook?:LiveBook;executionBook?:LiveBook;fill?:PaperFill;walletSell?:WalletEvent;payout?:number;checkedAt?:number };
 export type Fill = { id:string;experiment:string;strategy:WeatherStrategy;token:string;event:string;city:string;kind:string;outcome:string;
@@ -22,7 +37,7 @@ export type Decision = { id:string;experiment:string|null;strategy:WeatherStrate
 export type Readiness = { ready:boolean;process:boolean;source?:ExecutionSource;rest?:{lastResponse:number|null;error:string|null};
   ws:{socket:boolean;subscribed:number;snapshots:number;updates:number;lastPong?:number|null;error:string|null};
   sources:Record<string,{ok:boolean;at:number;count?:number;error?:string}> };
-export type View = Estimate & {event:string;books:{condition:string;yes?:Quote;no?:Quote}[]};
+export type View = Estimate & {event:string;marketCoverage?:{total:number;priced:number;coherent:boolean};books:{condition:string;yes?:Quote;no?:Quote}[]};
 export type Feed = { readiness:{checked_at:string;payload:Readiness}|null;
   live:{data:View[];opportunities?:WeatherStrategy[];wallets:{name:string;address:string}[];walletEvents:WalletEvent[]}|null;
   marks:Mark[];markets:WeatherEvent[];runs:Run[];banks:Bank[];positions:Position[];fills:Fill[];decisions:Decision[];
@@ -44,6 +59,7 @@ export const tone=(value:number|null)=>value==null||value===0?"":value>0?"profit
 export const sourceName:Record<ExecutionSource,string>={WEBSOCKET_L2:"WebSocket",REST_VERIFIED_PAPER:"Снимки REST",NO_EXECUTABLE_DATA:"Нет свежих котировок"};
 export const marketUrl=(market:WeatherEvent,bucket?:string)=>"https://polymarket.com/event/"+encodeURIComponent(market.slug)+(bucket?"/"+encodeURIComponent(bucket):"");
 export const modelName=(model:string)=>model.startsWith("ecmwf")?"ECMWF IFS":model.startsWith("gfs")?"GFS":"ICON";
+export const marketDay=(day:string)=>new Date(day+"T12:00:00Z").toLocaleDateString("ru",{day:"numeric",month:"long",timeZone:"UTC"});
 export const timeLeft=(end:number,now=Date.now())=>{const h=Math.max(0,Math.ceil((end-now)/3600000));return h>=24?Math.floor(h/24)+" д "+h%24+" ч":h+" ч";};
 export const actionName:Record<string,string>={BUY:"Покупка",SELL:"Продажа",SETTLE:"Официальный расчёт",HOLD:"Удержание",SKIP:"Пропуск",OPEN:"Открыта",CLOSED:"Закрыта"};
 export const reasons:Record<string,string>={
@@ -74,8 +90,7 @@ export function liquidValue(mark:Mark|null, position:Position) {
 }
 export function metrics(bank:Bank,feed:Feed,now:number) {
   const positions=feed.positions.filter(p=>p.experiment===bank.experiment&&p.strategy===bank.strategy);
-  const hasFeed=!!feed.readiness?.payload.process&&now-+new Date(feed.readiness.checked_at)<=45000
-    && feed.readiness.payload.source!=="NO_EXECUTABLE_DATA";
+  const hasFeed=!!feed.readiness?.payload.process&&now-+new Date(feed.readiness.checked_at)<=45000;
   const values=positions.map(p=>liquidValue(hasFeed?currentMark(feed.marks.find(m=>m.experiment===p.experiment&&m.strategy===p.strategy&&m.token===p.token),p,now):null,p));
   const unrealized=positions.length===bank.open&&values.every(v=>v!=null) ? values.reduce<number>((sum,v)=>sum+(v??0),0)-bank.locked : null;
   return {unrealized,total:unrealized==null?null:bank.realized+unrealized};

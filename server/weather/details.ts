@@ -25,7 +25,7 @@ export async function weatherPosition(user:string, experiment:string, strategy:s
       join weather.positions p on p.event=item->>'event' join weather.experiments e on e.id=p.experiment
       where s.key='markets' and e.user_id=${user} and p.experiment=${experiment} and p.strategy=${strategy} and p.token=${token}`,
     sql`select j.* from weather.state s cross join lateral jsonb_to_recordset(s.payload->'marks')
-      j(experiment uuid,strategy text,token text,shares float8,basis float8,at float8,quote jsonb,depth float8,fill jsonb)
+      j(experiment uuid,strategy text,token text,shares float8,basis float8,at float8,quote jsonb,depth float8,fill jsonb,reason text,minimum float8)
       join weather.experiments e on e.id=j.experiment where s.key='position_marks' and e.user_id=${user}
       and j.experiment=${experiment} and j.strategy=${strategy} and j.token=${token}`,
   ]);

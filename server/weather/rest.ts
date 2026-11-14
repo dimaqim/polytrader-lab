@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { numeric, parseBook, UpstreamError } from "../polymarket.ts";
-import { restFresh } from "../../lib/weather/execution.ts";
 import type { LiveBook } from "../../lib/weather/types.ts";
 import { weatherFetch } from "./network.ts";
 
@@ -66,8 +65,11 @@ export class WeatherRest {
     }
     this.lastError=failure?.status==="rejected"?String(failure.reason):"";
     const at=Date.now();
-    for(const [key,book] of this.books) if(!restFresh(book,key,at)) this.books.delete(key);
-    for(const quote of books) this.books.set(quote.book.asset,quote);
+    for(const [key,book] of this.books) if(at-book.book.receivedAt>15*60_000) this.books.delete(key);
+    for(const quote of books) {
+      const previous=this.books.get(quote.book.asset);
+      if(!previous||quote.book.sourceAt>=previous.book.sourceAt) this.books.set(quote.book.asset,quote);
+    }
     this.lastResponse=at;
     return books.length;
   }

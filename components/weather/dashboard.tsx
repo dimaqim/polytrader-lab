@@ -1,7 +1,7 @@
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { weatherStrategies,type WeatherStrategy } from "../../lib/weather/strategies";
 import { dateTime,money } from "../trade-journal";
-import { actionName,cityName,kindName,metrics,pct,price,reasonText,sourceName,strategyStatus,timeLeft,
+import { actionName,cityName,currentMark,kindName,liquidValue,marketDay,metrics,pct,price,reasonText,sourceName,strategyStatus,timeLeft,
   type Bank,type Feed,type Fill,type Position,type Run,type Decision,type Readiness } from "./data";
 import { Empty,Facts,Result,Row } from "./panels";
 
@@ -36,7 +36,13 @@ export function Dashboard({feed,run,banks,now,authenticated,busy,mutate,openPosi
   const subtotal=unrealized.every(p=>p!=null)?unrealized.reduce<number>((sum,x)=>sum+(x??0),0):null;
   const sum=(key:"cash"|"initial"|"locked"|"realized")=>banks.reduce((total,b)=>total+b[key],0);
   const source=online?feed.readiness?.payload.source:undefined;
-  const lastMark=Math.max(0,...feed.marks.filter(mark=>mark.experiment===run?.id).map(mark=>mark.at));
+  const openPositions=feed.positions.filter(p=>p.experiment===run?.id);
+  const assessed=online ? openPositions.flatMap(p=>{
+    const mark=currentMark(feed.marks.find(m=>m.strategy===p.strategy&&m.experiment===p.experiment&&m.token===p.token),p,now);
+    const value=liquidValue(mark,p);
+    return mark&&value!=null?[{at:mark.at,profit:value-p.basis}]:[];
+  }) : [];
+  const lastMark=Math.max(0,...assessed.map(mark=>mark.at));
   return <div className="weather-stack">
     <section className="run weather-overview"><div className="weather-overview-title">
       <div><h2>Виртуальная торговля</h2><p>{run ? "14-дневный эксперимент" : "Эксперимент Weather Lab"}</p></div>
@@ -59,11 +65,14 @@ export function Dashboard({feed,run,banks,now,authenticated,busy,mutate,openPosi
       ["Реализовано",<Result value={sum("realized")}/>],["PnL открытых позиций",<Result value={subtotal}/>],
       ["Общий PnL",<Result value={subtotal==null?null:subtotal+sum("realized")}/>],
     ]}/><p className="muted">Сумма {banks.length} независимых банков по {money(banks[0].initial)}. Стратегии могут входить в один рынок параллельно.</p>
-      {lastMark>0&&<p className="muted">Оценка продажи по проверенному стакану от {dateTime(lastMark)} по Киеву.</p>}
+      {openPositions.length>0&&<p className="muted">Полная продажа подтверждена для {assessed.length} из {openPositions.length} открытых позиций.
+        {subtotal==null&&assessed.length>0?<> По оценённой части <Result value={assessed.reduce((sum,x)=>sum+x.profit,0)}/>.</>:null}
+        {subtotal==null?" Общий результат появится, когда подтверждён весь остаток.":""}</p>}
+      {lastMark>0&&<p className="muted">Проверка продажи {dateTime(lastMark)} по Киеву.</p>}
       <EquityChart rows={equitySeries(feed,run!.id,banks.map(b=>b.strategy))}/></section>}
     <section className="weather-stack"><h3 className="weather-section-title">Открытые позиции</h3>
       {feed.positions.length?<div className="run weather-rows">{feed.positions.slice(0,6).map(p=><Row key={p.experiment+"/"+p.strategy+"/"+p.token}
-        title={cityName(p.city)+" · "+p.outcome} note={kindName(p.kind)+" · "+weatherStrategies[p.strategy]} value={money(p.basis)} onClick={()=>openPosition(p)}/>)}</div>
+        title={cityName(p.city)+" · "+p.outcome} note={(p.market_day?marketDay(p.market_day)+" · ":"")+kindName(p.kind)+" · "+weatherStrategies[p.strategy]} value={money(p.basis)} onClick={()=>openPosition(p)}/>)}</div>
         :<Empty>Открытых виртуальных позиций пока нет.</Empty>}
       {feed.positions.length>6&&<button className="text-action weather-start" onClick={journal}>Все открытые позиции</button>}
     </section>

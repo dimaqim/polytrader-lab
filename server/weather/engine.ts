@@ -272,8 +272,12 @@ export class WeatherEngine {
       }
       marketViews.push({ event: event.id, at, distribution: cur.distribution, observed: cur.observed, observation: cur.observation,
         confidence: cur.confidence, forecasts: cur.forecasts, calibration: cur.calibration,
+        marketCoverage:{total:event.contracts.length,
+          priced:event.contracts.filter(c=>quotes.has(c.yes)).length, coherent:unified},
         books: event.contracts.map(c => ({
-          condition:c.condition, yes:this.visibleQuote(books.get(c.yes)), no:this.visibleQuote(books.get(c.no)),
+          condition:c.condition,
+          yes:this.quoteStatus(c,c.yes,books.get(c.yes)),
+          no:this.quoteStatus(c,c.no,books.get(c.no)),
         })) });
       if (cur.confidence) scoreSamples.push({event:event.id,end:event.end,at,distribution:cur.distribution});
       skipped++;
@@ -286,7 +290,7 @@ export class WeatherEngine {
       if (!options.length && at >= this.persistAt && this.persist) await audit({ strategy:"system",event:event.id,action:"SKIP",reason,
         evidence:{ estimate:cur, session, lastQuote:this.ws.lastQuote },key:String(Math.floor(at/(5*minute))) });
       if (!this.persist) continue;
-      await this.managePositions(event,eventPositions,cur,wallet,quotes,books,at);
+      await this.managePositions(event,eventPositions,cur,wallet,books,at);
       if (event.receivedAt >= at - 15 * minute) {
         await this.consider(event,cur,options,banks,books,at);
         if (session) await this.monitorComplete(event,banks,session,at);
@@ -343,7 +347,7 @@ export class WeatherEngine {
   }
 
   private async managePositions(event: WeatherEvent, positions: Position[], cur: Estimate, wallet: WalletEvent[],
-    quotes: Map<string,{ bid:number; ask:number }>, books: Map<string,LiveBook>, at: number) {
+    books: Map<string,LiveBook>, at: number) {
     for (const position of positions) {
       const c = event.contracts.find(c => c.condition === position.condition);
       if (!c) continue;
@@ -354,10 +358,11 @@ export class WeatherEngine {
           evidence:{ payout, source:"Polymarket resolved payout", checkedAt:event.receivedAt },key:"settlement" });
         continue;
       }
-      const quote = quotes.get(position.token), book = books.get(position.token);
-      if (!c.open || !c.fee || !quote || !book) continue;
+      const book = books.get(position.token);
+      const bid = book?.book.bids[0]?.price;
+      if (!c.open || !c.fee || !book || bid == null) continue;
       const model = saleModel(cur,c,position.token);
-      const afterFees = quote.bid - takerFee(1,quote.bid,c.fee);
+      const afterFees = bid - takerFee(1,bid,c.fee);
       const walletSell = !book.rest && position.strategy.startsWith("replay_") ? wallet.find(row => row.type === "TRADE" && row.side === "SELL"
         && row.wallet === position.source_wallet && row.token === position.token && row.at > +new Date(position.opened_at)
         && row.receivedAt > +new Date(position.opened_at) && at - row.receivedAt < 120_000) : undefined;
@@ -386,7 +391,7 @@ export class WeatherEngine {
       }
       await audit({ experiment:position.experiment,strategy:position.strategy,event:event.id,token:position.token,
         action:"SELL",reason,evidence,key:walletSell?.id ?? String(Math.floor(at/minute)) });
-      this.pending.set(id,{ bank,event,contract:c,token:position.token,outcome:position.outcome,side:"SELL",reference:quote.bid,reason,
+      this.pending.set(id,{ bank,event,contract:c,token:position.token,outcome:position.outcome,side:"SELL",reference:bid,reason,
         estimate:cur,readyAt:at+delay,source:book.rest?"REST_VERIFIED_PAPER":"WEBSOCKET_L2",signalBook:book,evidence,position,shares:walletSell ? position.shares * Math.min(1,walletSell.shares/knownInventory) : position.shares,wallet:walletSell });
     }
   }
@@ -493,10 +498,19 @@ export class WeatherEngine {
     await audit({ ...begin,reason:rest && ["PAPER_FILLED","PAPER_SELL_FILLED"].includes(status) ? row.source : partial ? "PAPER_PARTIAL" : status,evidence });
   }
 
-  private visibleQuote(quote:LiveBook|undefined) {
-    if (!quote) return undefined;
-    return {bid:quote.book.bids[0]?.price ?? null,ask:quote.book.asks[0]?.price ?? null,
-      source:quote.rest?"REST_VERIFIED_PAPER":"WEBSOCKET_L2",at:quote.book.sourceAt};
+  private quoteStatus(contract:Contract, token:string, fresh:LiveBook|undefined) {
+    const latest = [this.ws.book(token), this.rest.book(token)]
+      .filter((book):book is LiveBook=>book!=null).sort((a,b)=>b.book.sourceAt-a.book.sourceAt)[0];
+    const quote = fresh ?? latest;
+    const status = !contract.open ? "CLOSED" : !contract.fee ? "FEE_UNKNOWN"
+      : fresh ? "FRESH" : latest ? "STALE" : this.ws.tracks(token) ? "WAITING" : "NOT_TRACKED";
+    return {
+      status,
+      bid:quote?.book.bids[0]?.price ?? null,
+      ask:quote?.book.asks[0]?.price ?? null,
+      at:quote?.book.sourceAt ?? null,
+      source:quote ? quote.rest?"REST_VERIFIED_PAPER":"WEBSOCKET_L2" : null,
+    };
   }
 
   private async mark(banks: Bank[], at: number) {
@@ -510,10 +524,18 @@ export class WeatherEngine {
         const contract = event?.contracts.find(c=>c.condition===p.condition);
         if (event && !liquidationBooks.has(event.id)) liquidationBooks.set(event.id,this.quotesFor(event,at));
         const book = event && liquidationBooks.get(event.id)?.get(p.token);
-        if (!contract?.fee || !book) return null;
-        const fill = takeDepth(book,{minimum:book.rest?.minimum??contract.minimum,tick:book.rest?.tick??this.ws.tickSize(p.token,contract.tick)},"SELL",p.shares,.000001,contract.fee);
+        if (!contract) return null;
+        const quote=this.quoteStatus(contract,p.token,book);
+        const minimum=book?.rest?.minimum??contract.minimum;
+        const depth=book?.book.bids.reduce((total,level)=>total+level.size,0)??null;
+        const fill=contract.fee&&book
+          ? takeDepth(book,{minimum,tick:book.rest?.tick??this.ws.tickSize(p.token,contract.tick)},"SELL",p.shares,.000001,contract.fee)
+          : null;
+        const reason=quote.status!=="FRESH" ? quote.status : !depth ? "NO_BUYERS"
+          : p.shares<minimum ? "POSITION_BELOW_MINIMUM" : depth<minimum ? "DEPTH_BELOW_MINIMUM"
+          : !fill ? "UNVERIFIED_LEVELS" : fill.partial ? "PARTIAL" : "FULL";
         marks.push({experiment:p.experiment,strategy:p.strategy,token:p.token,shares:p.shares,basis:p.basis,
-          at,quote:this.visibleQuote(book),depth:book.book.bids.reduce((total,level)=>total+level.size,0),fill});
+          at,quote,depth,fill,reason,minimum});
         return !fill || fill.partial ? null : fill.gross-fill.fee;
       });
       equity.push({bank, liquidation:values.some(v=>v==null)?null:values.reduce<number>((s,v)=>s+(v??0),0)});

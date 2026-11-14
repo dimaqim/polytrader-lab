@@ -25,7 +25,8 @@ export async function weatherDashboard(user: string | null) {
         from weather.positions where experiment=b.experiment and strategy=b.strategy) p on true
       where e.user_id=${user} and e.id in (select id from weather.experiments where user_id=${user} order by starts_at desc limit 5)`,
     sql`select p.experiment,p.strategy,p.token,p.event,p.outcome,p.shares::float8,p.basis::float8,p.realized::float8,
-      p.opened_at,p.closed_at,m.payload->'station'->>'city' city,m.payload->>'kind' kind, purchase.price
+      p.opened_at,p.closed_at,m.payload->'station'->>'city' city,m.payload->>'kind' kind,
+      m.payload->>'date' market_day, (m.payload->>'end')::float8 market_end, purchase.price
       from weather.positions p join weather.experiments e on e.id=p.experiment join weather.markets m on m.id=p.event
       left join lateral(select (gross/shares)::float8 price from weather.fills
         where experiment=p.experiment and strategy=p.strategy and token=p.token and side='BUY' limit 1) purchase on true
@@ -49,7 +50,7 @@ export async function weatherDashboard(user: string | null) {
       from latest l join weather.equity q on q.experiment=l.experiment and q.at=l.at order by q.at desc limit 4500`,
     sql`select signals,fills,health,daily from weather.notification_preferences where user_id=${user}`,
     sql`select j.* from weather.state s cross join lateral jsonb_to_recordset(s.payload->'marks')
-      j(experiment uuid,strategy text,token text,shares float8,basis float8,at float8,quote jsonb,depth float8,fill jsonb)
+      j(experiment uuid,strategy text,token text,shares float8,basis float8,at float8,quote jsonb,depth float8,fill jsonb,reason text,minimum float8)
       join weather.experiments e on e.id=j.experiment where s.key='position_marks' and e.user_id=${user}`,
   ]);
   return { readiness: states.find(row => row.key === "readiness") ?? null,

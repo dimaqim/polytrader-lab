@@ -5,8 +5,8 @@ import { ArrowLeft, ArrowUpRight, ChevronRight } from "lucide-react";
 import { weatherStrategies, risk, type WeatherStrategy } from "../../lib/weather/strategies";
 import { dateTime, money, walletLink } from "../trade-journal";
 import { exits, lessons } from "./education";
-import { actionName,cash,cityName,currentMark,kindName,liquidValue,marketUrl,metrics,modelName,needsStream,pct,pnl,price,qty,reasonText,sourceName,strategyStatus,tone,
-  type Bank,type Decision,type Feed,type PositionDetail,type Run,type Evidence } from "./data";
+import { actionName,cash,cityName,currentMark,kindName,liquidValue,marketDay,marketUrl,metrics,modelName,needsStream,pct,pnl,price,qty,quoteIssue,reasonText,sourceName,strategyStatus,tone,
+  type Bank,type Decision,type Feed,type Mark,type PositionDetail,type Run,type Evidence } from "./data";
 
 export function Sheet({title,onClose,children}:{title:string;onClose:()=>void;children:ReactNode}) {
   const ref=useRef<HTMLDialogElement>(null);
@@ -99,14 +99,14 @@ function ModelValues({evidence}:{evidence?:Evidence}) {
 }
 function BookEvidence({evidence}:{evidence:Evidence}) {
   const books=[["На момент сигнала",evidence.signalBook],["Проверка после задержки",evidence.executionBook]] as const;
-  return <>{books.map(([label,q])=>q&&<details className="trade-details" key={label}><summary>{label} · {dateTime(q.book.receivedAt)}</summary>
-    <p>{q.book.source==="rest"?"Снимок REST":"WebSocket"} · двусторонняя глубина {q.book.bids.length} / {q.book.asks.length} уровней</p>
+  return <>{books.map(([label,q])=>q&&<details className="trade-details" key={label}><summary>{label} · {q.book.receivedAt?dateTime(q.book.receivedAt):"время не сохранено"}</summary>
+    <p>{q.book.source==="rest"?"Снимок REST":"WebSocket"}{evidence.compact?" · краткая запись": " · уровней покупателей "+(q.book.bids?.length??0)+" · продавцов "+(q.book.asks?.length??0)}</p>
     {q.rest&&<p>Запрос {new Date(q.rest.requestedAt).toISOString()} · ответ {new Date(q.rest.receivedAt).toISOString()}</p>}
-    <p>Bid {price(q.book.bids[0]?.price)} · ask {price(q.book.asks[0]?.price)}</p>
-    <details><summary>Цены и объёмы сохранённых уровней</summary><div className="weather-depth">
+    <p>Покупатель предлагал {price(q.book.bids?.[0]?.price)} · продавец просил {price(q.book.asks?.[0]?.price)}</p>
+    {!evidence.compact&&<details><summary>Цены и объёмы сохранённых уровней</summary><div className="weather-depth">
       {[["Покупатели",q.book.bids],["Продавцы",q.book.asks]].map(([side,levels])=><div key={String(side)}><strong>{String(side)}</strong>
         {Array.isArray(levels)&&levels.map(level=><p key={level.price}>{price(level.price)} · {qty(level.size)}</p>)}</div>)}
-    </div></details>
+    </div></details>}
   </details>)}</>;
 }
 function SaleDetail({fill}:{fill:PositionDetail["fills"][number]}) {
@@ -136,6 +136,17 @@ function SaleDetail({fill}:{fill:PositionDetail["fills"][number]}) {
   </section>;
 }
 
+function saleAvailability(mark:Mark|null,previous:Mark|null,now:number,online:boolean) {
+  if(mark?.reason==="PARTIAL"||mark?.reason==="FULL") return null;
+  if(mark?.reason==="NO_BUYERS") return "Стакан свежий, но покупателей этого контракта сейчас нет.";
+  if(mark?.reason==="POSITION_BELOW_MINIMUM") return "Остаток меньше минимального объёма заявки ("+qty(mark.minimum??0)+" шт.).";
+  if(mark?.reason==="DEPTH_BELOW_MINIMUM") return "Покупатели есть, но их общий объём меньше минимальной заявки ("+qty(mark.minimum??0)+" шт.).";
+  if(mark?.reason==="UNVERIFIED_LEVELS") return "Полученные заявки не прошли проверку допустимой цены и объёма.";
+  if(!online) return "Сборщик пока не подтверждает свежие котировки.";
+  if(!mark&&previous&&now-previous.at>75_000) return "Проверка этого контракта устарела. Ждём следующий снимок.";
+  return quoteIssue(mark?.quote,now) ?? "Объём для продажи ещё не подтверждён.";
+}
+
 export function PositionPanel({detail,now,fillId,feedOnline}:{detail:PositionDetail;now:number;fillId?:string;feedOnline:boolean}) {
   const {position:p,fills,live,timeline}=detail;
   const open=p.closed_at==null;
@@ -148,6 +159,11 @@ export function PositionPanel({detail,now,fillId,feedOnline}:{detail:PositionDet
   const current=probability&&contract?(contract.yes===p.token?probability.p:1-probability.p):null;
   const mark=feedOnline?currentMark(detail.mark,p,now):null;
   const liquidation=liquidValue(mark,p);
+  const saleIssue=saleAvailability(mark,detail.mark,now,feedOnline);
+  const available=mark?.fill;
+  const freshQuote=mark&&!quoteIssue(mark.quote,now)?mark.quote:null;
+  const purchaseReason=reasonText(ev?.reason??c?.reason??"");
+  const contractPayout=contract?.payout?.[contract.yes===p.token?0:1];
   const last=timeline.findLast(row=>row.action==="HOLD"||row.action==="SELL"||row.action==="SKIP");
   const marketAtEntry=ev?.estimate?.distribution.find(x=>x.condition===contract?.condition)?.market;
   const entryProbability=p.strategy==="favorite"?marketAtEntry:c?.probability;
@@ -162,51 +178,60 @@ export function PositionPanel({detail,now,fillId,feedOnline}:{detail:PositionDet
     steps.push({key:item.id,at:item.evaluated_at?Number(item.evaluated_at):+new Date(item.at),label:actionName[item.action]??"Решение",detail:reasonText(item.reason)});
   }
   return <>
-    <section className="run"><h3>{kindName(p.market.kind)} · {p.outcome}</h3><p>{weatherStrategies[p.strategy]} · {open?"Открыта":"Закрыта"}</p>
+    <section className="run weather-position-summary"><h3>{p.outcome} · {marketDay(p.market.date)}</h3>
+      <p>{kindName(p.market.kind)} · {p.market.station.code}</p>
+      <p className="muted">{weatherStrategies[p.strategy]} · {open?"Открыта":"Закрыта"}</p>
+      <p><strong>Почему открылась</strong> · {purchaseReason}{c?.wallet?" · "+c.wallet.name:""}</p>
+      {buy&&<p>Вход {dateTime(buy.at)} по Киеву · {price(buy.gross/buy.shares)} за контракт · {money(buy.basis)} с комиссией</p>}
       <a className="weather-link" href={marketUrl(p.market,contract?.slug)} target="_blank" rel="noreferrer">Открыть рынок на Polymarket <ArrowUpRight size={14}/></a>
       {selected?.side==="BUY"&&<div className="weather-inline"><strong>{actionName[selected.side]} · {dateTime(selected.at)}</strong><p>{price(selected.gross/selected.shares)} · {qty(selected.shares)} шт. · комиссия {money(selected.fee)}</p></div>}
     </section>
     {fills.some(fill=>fill.side!=="BUY")&&<section className="run"><h3>Почему закрыли позицию</h3>
       {(selected&&selected.side!=="BUY"?[selected]:fills.filter(fill=>fill.side!=="BUY")).map(fill=><SaleDetail key={fill.id} fill={fill}/>)}
     </section>}
-    <section className="run"><h3>Деньги и контракты</h3><Facts items={[
-      ["Вход по Киеву",buy?dateTime(buy.at):"Нет записи"],["Цена входа",buy?price(buy.gross/buy.shares):"—"],
-      ["Куплено",buy?qty(buy.shares)+" шт.":"—"],["Покупка без комиссии",buy?money(buy.gross):"—"],["Комиссия покупки",buy?money(buy.fee):"—"],
-      ["Полная себестоимость входа",cash(p.original_cost??buy?.basis??null)],["Осталось",qty(p.shares)+" шт."],
-      ["Себестоимость остатка",money(p.basis)],["Зафиксированный результат",<Result value={p.realized}/>],
-    ]}/>
-    {open&&<><h3>Возможная продажа сейчас</h3><Facts items={[
-      ["Bid / ask",mark?price(mark.quote.bid)+" / "+price(mark.quote.ask):"Нет актуальной оценки"],["Объём по bid",mark?qty(mark.depth)+" шт.":"—"],
-      ["Чистая продажа всего остатка",cash(liquidation)],["Комиссия продажи",mark?.fill?money(mark.fill.fee):"—"],
-      ["PnL открытой части",<Result value={liquidation==null?null:liquidation-p.basis}/>],
-      ["Выплата при победе",money(p.shares)],["Потеря открытой части при поражении",money(p.basis)],
-    ]}/>
-      {mark?.fill?.partial&&<p>По сохранённому стакану можно было продать {qty(mark.fill.shares)} из {qty(p.shares)} шт. с чистой выручкой {money(mark.fill.gross-mark.fill.fee)}.</p>}
-      {mark?<p className="muted">Последняя проверенная оценка · {dateTime(mark.at)} по Киеву · {mark.quote.source?sourceName[mark.quote.source]:"Polymarket"}</p>
-        :<p className="muted">Нужен свежий стакан с достаточной глубиной для текущего остатка.</p>}
-    </>}
-    </section>
-    <section className="run"><h3>Причина покупки</h3><p>{reasonText(ev?.reason??c?.reason??"")}</p>
-      <Facts items={[["Вероятность выбранной стороны",pct(entryProbability)],["Консервативная оценка",c?.reason==="OBSERVED_RANGE_EXCLUDED"?"95% · порог правила":pct(c?.conservative)],
-        ["Ask в момент сигнала",price(c?.reference)],["Преимущество после расходов",price(c?.ev)]]}/>
-      {!c&&<Empty>Исходные параметры сигнала в этой записи недоступны.</Empty>}
-      {(p.strategy==="favorite"||p.strategy.startsWith("replay_"))&&<p className="muted">Вход определяется условиями стратегии. Погодные оценки показаны для контекста, когда они сохранены.</p>}
+    {open&&<section className="run"><h3>Когда закроется</h3>
+      <p>{contractPayout!=null ? "Polymarket опубликовал исход. Бот проведёт расчёт позиции."
+        : now>=p.market.end ? "Местные сутки закончились. Бот ждёт официальный исход Polymarket."
+        : "Бот может продать раньше, если правило выхода подтвердится по свежим заявкам покупателей."}</p>
+      <p><strong>Конец погодных суток</strong> · {dateTime(p.market.end)} по Киеву. Официальный расчёт может прийти позже.</p>
+      <p className="muted">{last?"Последняя запись · "+reasonText(last.reason)+" · "+dateTime(last.at):"Записей о решении по выходу пока нет."}</p>
+      <details className="trade-details"><summary>Условия выхода</summary><p>{exits(p.strategy)}</p></details>
+    </section>}
+    {open&&<section className="run"><h3>Сколько можно получить</h3>
+      <Facts items={[
+        ["Вложено в остаток",money(p.basis)],["Контрактов осталось",qty(p.shares)],
+        ["Если выиграет · выплата",money(p.shares)],["Если выиграет · прибыль",<Result value={p.shares-p.basis}/>],
+        ["Если проиграет · результат",<Result value={-p.basis}/>],["Уже зафиксировано",<Result value={p.realized}/>],
+      ]}/>
+      <h4>Если продать по последней проверке</h4>
+      {liquidation!=null?<Facts items={[["Получили бы чистыми",money(liquidation)],["Результат по остатку",<Result value={liquidation-p.basis}/>]]}/>
+        :<p className="weather-inline">{available?.partial ? "Доступна частичная продажа. За "+qty(available.shares)+" из "+qty(p.shares)+" контрактов покупатели предложили бы "+money(available.gross-available.fee)+" после комиссии."
+          :saleIssue}</p>}
+      {mark?.quote.at!=null&&<p className="muted">Снимок котировок · {dateTime(mark.quote.at)} по Киеву · {mark.quote.source?sourceName[mark.quote.source]:"Polymarket"}</p>}
+      <details className="trade-details"><summary>Цены, объём и комиссия продажи</summary>
+        <Facts items={[
+          ["Цена покупателя (bid)",freshQuote?freshQuote.bid==null?"Покупателей нет":price(freshQuote.bid):"Не подтверждена"],
+          ["Цена продавца (ask)",freshQuote?freshQuote.ask==null?"Продавцов нет":price(freshQuote.ask):"Не подтверждена"],
+          ["Объём покупателей",mark?.depth==null?"Не подтверждён":qty(mark.depth)+" шт."],
+          ["Комиссия продажи",available?money(available.fee):"Пока неизвестна"],
+        ]}/>
+        <p className="muted">Bid показывает, по какой цене у вас готовы купить. Ask показывает, по какой цене вам готовы продать. При сделке на несколько контрактов бот учитывает цены и объёмы всех использованных заявок.</p>
+      </details>
+    </section>}
+    <section className="run"><details className="trade-details"><summary>Данные на входе</summary>
+      <Facts items={[["Вероятность при покупке",pct(entryProbability)],["Последняя оценка модели",pct(current)],
+        ["Консервативная оценка",c?.reason==="OBSERVED_RANGE_EXCLUDED"?"95% · порог правила":pct(c?.conservative)],
+        ["Цена продавца в момент сигнала",price(c?.reference)],["Преимущество после расходов",price(c?.ev)],
+        ["Комиссия покупки",buy?money(buy.fee):"Нет записи"]]}/>
+      {live&&<p className="muted">Оценка модели от {dateTime(live.at)} по Киеву.</p>}
       <ModelValues evidence={ev}/>
       {c?.wallet&&<p>Кошелёк в сигнале · <a className="weather-link" href={walletLink(c.wallet.wallet)} target="_blank" rel="noreferrer">{c.wallet.name}</a> · {price(c.wallet.price)} · {dateTime(c.wallet.receivedAt)}</p>}
       {ev&&<BookEvidence evidence={ev}/>}
-    </section>
-    {open&&<section className="run"><h3>Что происходит сейчас</h3>
-      <Facts items={[["Вероятность при входе",pct(entryProbability)],["Последняя оценка модели",pct(current)],["Ask при сигнале",price(c?.reference)],["Доступный bid",price(mark?.quote.bid)]]}/>
-      {live&&<p className="muted">Оценка модели от {dateTime(live.at)} по Киеву.</p>}
-      <ModelValues evidence={live?{estimate:live}:undefined}/>
-      {last&&<p>Последняя запись · {reasonText(last.reason)} · {dateTime(last.at)}</p>}
-      {last?.fair!=null&&<p>При той проверке оценка удержания {price(Number(last.fair))}{last.net_bid!=null?" · чистый bid "+price(Number(last.net_bid)):""}.</p>}
-      <p>{exits(p.strategy)}</p>
-    </section>}
-    <section className="run"><h3>История позиции</h3><ol className="weather-timeline">
+    </details></section>
+    <section className="run"><details className="trade-details"><summary>История позиции</summary><ol className="weather-timeline">
       {steps.sort((a,b)=>a.at-b.at).map(step=><li key={step.key}><small>{dateTime(step.at)} по Киеву</small>
         <strong>{step.label}</strong>{step.detail&&<p>{step.detail}</p>}{step.proof&&<BookEvidence evidence={step.proof}/>}</li>)}
-    </ol></section>
+    </ol></details></section>
   </>;
 }
 

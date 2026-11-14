@@ -109,7 +109,7 @@ export function WeatherLab({authenticated}:{authenticated:boolean}) {
       {detail.type==="strategy"&&feed?<StrategyPanel strategy={detail.strategy} bank={banks.find(b=>b.strategy===detail.strategy)}
         run={run} feed={feed} now={now} busy={busy} onToggle={paused=>mutate("strategy",{id:run?.id,strategy:detail.strategy,paused})}
         showJournal={()=>showJournal(detail.strategy,"buys")}/>
-        :detail.type!=="strategy"&&<RemoteDetail key={JSON.stringify(detail)} detail={detail} now={now} feedOnline={source!=="NO_EXECUTABLE_DATA"}/>}
+        :detail.type!=="strategy"&&<RemoteDetail key={JSON.stringify(detail)} detail={detail} now={now} feedOnline={!!feed?.readiness?.payload.process&&now-+new Date(feed.readiness.checked_at)<45000}/>}
     </Sheet>}
   </section>;
 }
