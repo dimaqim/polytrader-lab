@@ -247,8 +247,9 @@ input:not([type=checkbox]), select {
 .weather, .weather-stack { display: grid; gap: 12px; min-width: 0; }
 .weather-top, .weather-actions, .weather-facts { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
 .weather-top { justify-content: space-between; }
+.weather-top .text-action { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .weather-tabs { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 4px; }
-.weather-tabs button { overflow-wrap: anywhere; }
+.weather-tabs button { padding-inline: 2px; }
 .weather-stack h2 { font-weight: 850; font-size: 18px; }
 .weather h3 { font-size: 15px; font-weight: 850; overflow-wrap: anywhere; }
 .weather-empty { padding: 12px 4px; }

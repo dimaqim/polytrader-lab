@@ -8,7 +8,7 @@ import type { Estimate, WalletEvent, WeatherEvent } from "../lib/weather/types";
 import { dateTime, money, resultMoney, walletLink } from "./trade-journal";
 
 const sections = [
-  ["overview", "Эксперимент"], ["markets", "Рынки"], ["strategies", "Стратегии"], ["journal", "Журнал"],
+  ["overview", "Тест"], ["markets", "Рынки"], ["strategies", "Стратегии"], ["journal", "Журнал"],
   ["wallets", "Кошельки"], ["analysis", "Аналитика"], ["health", "Источники"],
 ] as const;
 type Section = typeof sections[number][0];
