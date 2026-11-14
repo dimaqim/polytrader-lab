@@ -1,8 +1,9 @@
 import { database } from "../db.ts";
+import { notificationDefaults } from "./notifications.ts";
 
 export async function weatherDashboard(user: string | null) {
   const sql = database();
-  const [states, markets, runs, banks, positions, fills, decisions, equity] = await sql.transaction([
+  const [states, markets, runs, banks, positions, fills, decisions, equity, preferences] = await sql.transaction([
     sql`select key,checked_at,payload from weather.state where key in ('markets','readiness')`,
     sql`select payload from weather.markets where (payload->>'end')::float8>extract(epoch from now()-interval '1 day')*1000
       order by (payload->>'start')::float8,id limit 48`,
@@ -34,8 +35,10 @@ export async function weatherDashboard(user: string | null) {
     sql`select q.experiment,q.strategy,date_trunc('hour',q.at) at,avg(q.cash+q.liquidation)::float8 equity
       from weather.equity q join weather.experiments e on e.id=q.experiment where e.user_id=${user}
       and q.at>now()-interval '14 days' group by 1,2,3 order by 3 desc limit 4500`,
+    sql`select signals,fills,health,daily from weather.notification_preferences where user_id=${user}`,
   ]);
   return { readiness: states.find(row => row.key === "readiness") ?? null,
     live: states.find(row => row.key === "markets")?.payload ?? null,
-    markets: markets.map(row => row.payload), runs,banks,positions,fills,decisions,equity };
+    markets: markets.map(row => row.payload), runs,banks,positions,fills,decisions,equity,
+    notifications: user ? preferences[0] ?? notificationDefaults : null };
 }

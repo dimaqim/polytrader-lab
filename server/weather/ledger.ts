@@ -1,8 +1,9 @@
 import { database, date } from "../db.ts";
 import { hash } from "./sources.ts";
 import type { WeatherEvent } from "../../lib/weather/types.ts";
-import { risk, strategyKeys, type WeatherStrategy } from "../../lib/weather/strategies.ts";
+import { risk, strategyKeys, weatherStrategies, type WeatherStrategy } from "../../lib/weather/strategies.ts";
 import type { PaperFill } from "../../lib/weather/execution.ts";
+import { enqueueWeather } from "./notifications.ts";
 
 export async function state(key: string, payload: object) {
   await database()`insert into weather.state(key,payload) values(${key},${JSON.stringify(payload)})
@@ -56,14 +57,18 @@ export async function postFill(row: { experiment: string; strategy: string; toke
   const [result] = await sql`select weather.post_fill(${id},${row.experiment},${row.strategy},${row.token},${row.event.id},
     ${row.condition},${row.event.station.code + "/" + row.event.date},${row.outcome},${row.side},${row.fill.shares},${row.fill.gross},
     ${row.fill.fee},${JSON.stringify(row.evidence)}) as status`;
-  if (["PAPER_FILLED","PAPER_SELL_FILLED","SETTLED"].includes(result.status)) {
-    const price = (row.fill.price * 100).toFixed(2);
-    const label = row.side === "BUY" ? "Виртуальная покупка" : row.side === "SELL" ? "Виртуальная продажа" : "Расчёт позиции";
-    const payload = JSON.stringify({ text: `Weather Lab · ${label}\n${row.event.station.city} · ${row.outcome}\n${row.fill.shares.toFixed(4)} контрактов по ${price}¢`,
-      section: "weather" });
-    await sql`insert into lab.outbox(key,chat_id,payload)
-      select ${"weather:" + id},u.chat_id,${payload} from weather.experiments e join lab.users u on u.id=e.user_id
-      where e.id=${row.experiment} and u.alerts and u.chat_id is not null on conflict do nothing`;
+  if (["PAPER_FILLED","PAPER_SELL_FILLED","SETTLED","DUPLICATE"].includes(result.status)) {
+    const [verified] = await sql`select pnl::float8,(gross/shares)::float8 price,shares::float8,fee::float8,side
+      from weather.fills where id=${id}`;
+    if (!verified) return result.status as string;
+    const price = (verified.price * 100).toFixed(2);
+    const label = verified.side === "BUY" ? "Виртуальная покупка" : verified.side === "SELL" ? "Виртуальная продажа" : "Расчёт позиции";
+    const detail = verified.side === "SETTLE" ? "\nИсточник · официальный расчёт Polymarket"
+      : "\nСвежий стакан подтвердил объём после задержки.";
+    const description = `Weather Lab · ${label}\n${row.event.station.city} · ${row.outcome} · ${weatherStrategies[row.strategy as WeatherStrategy]}\n`
+      + `${verified.shares.toFixed(4)} контрактов по ${price}¢ · комиссия $${verified.fee.toFixed(4)}`
+      + (verified.pnl == null ? "" : `\nРезультат $${verified.pnl.toFixed(2)}`) + detail;
+    await enqueueWeather(row.experiment,"fills",id,description);
   }
   return result.status as string;
 }

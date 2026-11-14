@@ -3,11 +3,12 @@ import { database, date, log } from "../db.ts";
 import { takerFee } from "../../lib/simulator.ts";
 import { estimate } from "../../lib/weather/probability.ts";
 import { executable, payoffTable, takeDepth } from "../../lib/weather/execution.ts";
-import { candidates, risk, type Candidate, type WeatherStrategy } from "../../lib/weather/strategies.ts";
+import { candidates, risk, weatherStrategies, type Candidate, type WeatherStrategy } from "../../lib/weather/strategies.ts";
 import type { Contract, Estimate, Forecast, Observation, WalletEvent, WeatherEvent } from "../../lib/weather/types.ts";
 import { archiveEvents, archiveInputs, audit, markBank, postFill, state } from "./ledger.ts";
 import { calibrations, discover, ensemble, forecasts, hash, observations, verifyWallet, walletActivity, walletNames } from "./sources.ts";
 import { WeatherSocket } from "./socket.ts";
+import { enqueueWeather, weatherReport } from "./notifications.ts";
 import baseline from "../../lib/weather/calibration.json" with { type: "json" };
 
 type Bank = { experiment: string; strategy: WeatherStrategy; cash: number; exposure: number; running: boolean; risk_blocked: boolean };
@@ -51,6 +52,10 @@ export class WeatherEngine {
       this.periodic("wallets", 2 * minute, () => this.readWallets(), deadline),
       this.periodic("engine", 250, () => this.engine(), deadline),
       this.periodic("heartbeat", 10_000, () => this.heartbeat(), deadline),
+      this.periodic("notifications", minute, async () => {
+        if (this.persist) await weatherReport(Date.now(), !this.ws.activeSession || Date.now()-this.ws.lastQuote>maximumAge);
+        return 0;
+      }, deadline),
     ];
     try {
       while (this.running && Date.now() < deadline) { this.ws.tick(); await sleep(250); }
@@ -212,17 +217,18 @@ export class WeatherEngine {
       marketViews.push({ event: event.id, at, distribution: cur.distribution, observed: cur.observed, observation: cur.observation,
         confidence: cur.confidence, forecasts: cur.forecasts, calibration: cur.calibration,
         books: event.contracts.map(c => ({ condition: c.condition, yes: quotes.get(c.yes), no: quotes.get(c.no) })) });
-      const reason = !event.verified ? "RULES_UNVERIFIED" : !session || !mids.size ? "STALE_BOOK"
-        : !cur.confidence ? "INSUFFICIENT_MODEL_CONFIDENCE" : "NO_CONSERVATIVE_EDGE";
       skipped++;
       const wallet = [...this.walletTrades.values()].filter(row => event.contracts.some(c => c.condition === row.condition))
         .sort((a,b) => b.receivedAt-a.receivedAt);
-      if (at >= this.persistAt && this.persist) await audit({ strategy:"system",event:event.id,action:"SKIP",reason,
+      const options = session && event.receivedAt >= at-15*minute ? candidates(event,cur,prior,quotes,wallet,at) : [];
+      const reason = !event.verified ? "RULES_UNVERIFIED" : !session || !mids.size ? "STALE_BOOK"
+        : !cur.confidence ? "INSUFFICIENT_MODEL_CONFIDENCE" : "NO_CONSERVATIVE_EDGE";
+      if (!options.length && at >= this.persistAt && this.persist) await audit({ strategy:"system",event:event.id,action:"SKIP",reason,
         evidence:{ estimate:cur, session, lastQuote:this.ws.lastQuote },key:String(Math.floor(at/(5*minute))) });
       if (!this.persist) continue;
       await this.managePositions(event,eventPositions,cur,wallet,quotes,session,at);
       if (session && event.receivedAt >= at - 15 * minute) {
-        await this.consider(event,cur,prior,wallet,quotes,banks,session,at);
+        await this.consider(event,cur,options,banks,session,at);
         await this.monitorComplete(event,banks,session,at);
       }
     }
@@ -239,9 +245,7 @@ export class WeatherEngine {
     return skipped;
   }
 
-  private async consider(event: WeatherEvent, current: Estimate, prior: Estimate | undefined, wallet: WalletEvent[],
-    quotes: Map<string,{ bid: number; ask: number }>, banks: Bank[], session: string, at: number) {
-    const options = candidates(event,current,prior,quotes,wallet,at);
+  private async consider(event: WeatherEvent, current: Estimate, options: Candidate[], banks: Bank[], session: string, at: number) {
     for (const bank of banks.filter(row => row.running && !row.risk_blocked && row.cash > 0 && row.exposure < risk.exposure)) {
       const choices = options.filter(row => row.strategy === bank.strategy);
       for (const candidate of choices.slice(0, bank.strategy === "distribution" ? 3 : 1)) {
@@ -262,6 +266,14 @@ export class WeatherEngine {
       reason:c.reason,evidence,key:String(Math.floor(at/minute)) });
     this.pending.set(id,{ bank,event,contract:c.contract,token:c.token,outcome:(c.yes ? "YES " : "NO ") + c.contract.bucket.label,
       side:"BUY",reference:c.reference,reason:c.reason,estimate:current,readyAt:at+delay, session,evidence,wallet:c.wallet });
+    if ((c.ev ?? 0) >= .05) {
+      const text = "Weather Lab · Сигнал " + event.station.city + " · " + (c.yes ? "YES " : "NO ") + c.contract.bucket.label
+        + "\n" + weatherStrategies[c.strategy] + " · цена " + (c.reference*100).toFixed(1) + "¢"
+        + (c.probability == null ? "" : " · вероятность " + (c.probability*100).toFixed(1) + "%")
+        + " · EV после комиссии " + ((c.ev ?? 0)*100).toFixed(1) + "%\nВход после повторной проверки стакана.";
+      void enqueueWeather(bank.experiment,"signals",hash([c.strategy,c.token,Math.floor(at/3600_000)]),text)
+        .catch(error=>log("weather_notifications",error));
+    }
   }
 
   private async managePositions(event: WeatherEvent, positions: Position[], cur: Estimate, wallet: WalletEvent[],
@@ -359,7 +371,7 @@ export class WeatherEngine {
       const fill = takeDepth(quote,{...c,tick:this.ws.tickSize(row.token,c.tick)},row.side,budget,target,fee);
       const edge = row.side === "BUY" && row.bank.strategy !== "favorite" && !row.bank.strategy.startsWith("replay_")
         ? (row.evidence as { candidate?: Candidate }).candidate?.conservative : null;
-      const evidence = { ...row.evidence, executionBook:quote, fill, fee, readyAt:row.readyAt,
+      const evidence = { ...row.evidence, reason:row.reason, executionBook:quote, fill, fee, readyAt:row.readyAt,
         expiresAt:quote.book.sourceAt+maximumAge, delayMs:quote.book.receivedAt - (row.evidence as { at?:number }).at! };
       if (!fill || (edge != null && edge - (fill.gross+fill.fee)/fill.shares < risk.edge)) {
         await audit({ ...begin,action:"SKIP",reason:fill ? "PRICE_MOVED" : "NO_LIQUIDITY_OR_MINIMUM",evidence });

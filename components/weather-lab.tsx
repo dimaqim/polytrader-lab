@@ -31,7 +31,9 @@ type Feed = {
   markets: WeatherEvent[]; runs: Run[]; banks: Bank[]; fills: Fill[]; decisions: Decision[];
   positions: { token: string; strategy: WeatherStrategy; experiment: string; city: string; outcome: string; shares: string; basis: string }[];
   equity: { experiment: string; strategy: WeatherStrategy; at: string; equity: number | null }[];
+  notifications: Record<"signals"|"fills"|"health"|"daily",boolean> | null;
 };
+const categories = { signals:"Существенные сигналы",fills:"Покупки, продажи и расчёты",health:"Сбои потока",daily:"Дневной отчёт" } as const;
 
 const reasonText: Record<string,string> = {
   RULES_UNVERIFIED: "Правила расчёта не подтверждены", STALE_BOOK: "Нет свежего стакана WebSocket",
@@ -225,6 +227,13 @@ export function WeatherLab({ authenticated }: { authenticated: boolean }) {
       </article>)}
     </div>}
     {feed && tab==="health" && <div className="weather-stack">
+      {feed.notifications && <article className="run settings"><h3>Уведомления в Telegram</h3>
+        {(Object.keys(categories) as (keyof typeof categories)[]).map(key=><div key={key}>
+          <label htmlFor={"weather-notify-"+key}>{categories[key]}</label>
+          <input id={"weather-notify-"+key} type="checkbox" checked={feed.notifications![key]} disabled={busy}
+            onChange={e=>void mutate("notifications",{ ...feed.notifications,[key]:e.target.checked })}/>
+        </div>)}<p className="muted">Действуют, когда включены общие уведомления по тестам.</p>
+      </article>}
       <article className="run"><h3>Polymarket L2</h3><p>{view?.ws.socket?"WebSocket открыт":"WebSocket недоступен"}</p>
         <p className="muted">Подписки {view?.ws.subscribed??0} · полные снимки {view?.ws.snapshots??0} · изменения {view?.ws.updates??0}</p>
         {view?.ws.error&&<p className="muted">{view.ws.error}</p>}</article>

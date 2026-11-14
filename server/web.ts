@@ -1,5 +1,6 @@
 import { weatherDashboard } from "./weather/web.ts";
 import { changeExperiment, startExperiment } from "./weather/ledger.ts";
+import { notificationDefaults, saveWeatherNotifications } from "./weather/notifications.ts";
 import { seedWallet, strategies, walletPattern } from "../lib/strategies.ts";
 import { comboMoney, comboStates, type ComboRecord } from "../lib/combos.ts";
 import { activeStrategies } from "../lib/market-scope.ts";
@@ -175,6 +176,11 @@ export async function web(req: Request, route: string[]) {
       return rows.length ? json({ ok: true }, 200, sessionCookie(rows[0].user_id)) : json({ pending: true }, 202);
     }
     if (!user) return json({ error: "login_required" }, 401);
+    if (action === "weather/notifications") {
+      if (!Object.keys(notificationDefaults).every(key => typeof input[key] === "boolean")) return json({ error: "invalid_request" }, 400);
+      await saveWeatherNotifications(user,input);
+      return json({ ok:true });
+    }
     if (action === "weather/start") {
       const id = await startExperiment(user);
       return id ? json({ id }, 201) : json({ error: "weather_not_ready_or_active" }, 409);
