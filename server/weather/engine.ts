@@ -13,7 +13,7 @@ import { enqueueWeather, weatherReport } from "./notifications.ts";
 import { sampleForecasts } from "./scoring.ts";
 import baseline from "../../lib/weather/calibration.json" with { type: "json" };
 
-type Bank = { experiment: string; strategy: WeatherStrategy; cash: number; exposure: number; running: boolean; risk_blocked: boolean };
+type Bank = { experiment: string; strategy: WeatherStrategy; cash: number; exposure: number; running: boolean; risk_blocked: boolean; entries_revision:number };
 type Position = { experiment: string; strategy: WeatherStrategy; event: string; token: string; condition: string;
   outcome: string; shares: number; basis: number; opened_at: string; source_wallet: string | null };
 type SourceHealth = { ok: boolean; at: number; count?: number; error?: string };
@@ -222,8 +222,8 @@ export class WeatherEngine {
     this.evaluateAt = now + 5000;
     const sql = this.persist ? database() : null;
     const [bankRows, positionRows] = sql ? await sql.transaction([
-      sql`select b.experiment,b.strategy,b.cash::float8,b.risk_blocked,
-        (e.status='running' and e.ends_at>now()) running, coalesce(p.exposure,0)::float8 as exposure
+      sql`select b.experiment,b.strategy,b.cash::float8,b.risk_blocked,b.entries_revision,
+        (e.status='running' and e.ends_at>now() and not b.entries_paused) running, coalesce(p.exposure,0)::float8 as exposure
         from weather.banks b join weather.experiments e on e.id=b.experiment
         left join lateral(select sum(basis) as exposure from weather.positions where experiment=b.experiment
           and strategy=b.strategy and shares>0) p on true
@@ -239,6 +239,7 @@ export class WeatherEngine {
     const at = Date.now();
     const session = this.ws.activeSession;
     const marketViews: object[] = [];
+    const opportunities = new Set<WeatherStrategy>();
     const scoreSamples: Parameters<typeof sampleForecasts>[0] = [];
     let skipped = 0;
     for (const event of this.data.values()) {
@@ -267,7 +268,9 @@ export class WeatherEngine {
       }
       marketViews.push({ event: event.id, at, distribution: cur.distribution, observed: cur.observed, observation: cur.observation,
         confidence: cur.confidence, forecasts: cur.forecasts, calibration: cur.calibration,
-        books: event.contracts.map(c => ({ condition: c.condition, yes: quotes.get(c.yes), no: quotes.get(c.no) })) });
+        books: event.contracts.map(c => ({
+          condition:c.condition, yes:this.visibleQuote(books.get(c.yes)), no:this.visibleQuote(books.get(c.no)),
+        })) });
       if (cur.confidence) scoreSamples.push({event:event.id,end:event.end,at,distribution:cur.distribution});
       skipped++;
       const wallet = [...this.walletTrades.values()].filter(row => event.contracts.some(c => c.condition === row.condition))
@@ -275,6 +278,7 @@ export class WeatherEngine {
       const options = quotes.size && event.receivedAt >= at-15*minute ? candidates(event,cur,prior,quotes,wallet,at) : [];
       const reason = !event.verified ? "RULES_UNVERIFIED" : !quotes.size ? "STALE_BOOK"
         : !cur.confidence ? "INSUFFICIENT_MODEL_CONFIDENCE" : "NO_CONSERVATIVE_EDGE";
+      for (const option of options) opportunities.add(option.strategy);
       if (!options.length && at >= this.persistAt && this.persist) await audit({ strategy:"system",event:event.id,action:"SKIP",reason,
         evidence:{ estimate:cur, session, lastQuote:this.ws.lastQuote },key:String(Math.floor(at/(5*minute))) });
       if (!this.persist) continue;
@@ -285,7 +289,7 @@ export class WeatherEngine {
       }
     }
     if (at >= this.persistAt && this.persist) {
-      await state("markets", { data: marketViews, walletEvents: [...this.walletTrades.values()].slice(-100), wallets: [...this.verifiedWallets.values()] });
+      await state("markets", { data: marketViews, opportunities:[...opportunities], walletEvents: [...this.walletTrades.values()].slice(-100), wallets: [...this.verifiedWallets.values()] });
       await sampleForecasts(scoreSamples);
       await this.mark(banks, at);
       this.persistAt = at + minute;
@@ -357,7 +361,7 @@ export class WeatherEngine {
       const reason = walletSell ? "PUBLIC_WALLET_SELL" : fair != null && afterFees >= fair + .02 ? "FAIR_VALUE_EXIT"
         : fair != null && riskCash >= 2.5 && fair < position.basis / position.shares - .15 ? "FORECAST_REVERSAL_RISK"
         : fair != null && afterFees >= position.basis / position.shares + .04 && afterFees >= fair - .01 ? "REPRICING_TARGET" : null;
-      const bank = { ...position, cash:0, exposure:0, running:false, risk_blocked:false };
+      const bank = { ...position, cash:0, exposure:0, running:false, risk_blocked:false, entries_revision:0 };
       const id = [position.experiment,position.strategy,position.token,"SELL"].join("/");
       if (!reason) {
         if (at >= this.persistAt) await audit({ experiment:position.experiment,strategy:position.strategy,event:event.id,token:position.token,
@@ -450,7 +454,7 @@ export class WeatherEngine {
     const fill = takeDepth(quote,{minimum:quote.rest?.minimum??c.minimum,tick:quote.rest?.tick??this.ws.tickSize(row.token,c.tick)},row.side,budget,target,fee);
     const edge = row.side === "BUY" && row.bank.strategy !== "favorite" && !row.bank.strategy.startsWith("replay_")
       ? (row.evidence as { candidate?: Candidate }).candidate?.conservative : null;
-    const evidence = { ...row.evidence, reason:row.reason,source:row.source, executionBook:quote, fill, fee, readyAt:row.readyAt,
+    const evidence = { ...row.evidence, reason:row.reason,source:row.source, entriesRevision:row.bank.entries_revision, executionBook:quote, fill, fee, readyAt:row.readyAt,
       expiresAt:quote.book.sourceAt+age, delayMs:quote.book.receivedAt - (row.evidence as { at?:number }).at! };
     if (!fill || (edge != null && edge - (fill.gross+fill.fee)/fill.shares < risk.edge)) {
       await audit({ ...begin,action:"SKIP",reason:fill ? "PRICE_MOVED" : "NO_LIQUIDITY_OR_MINIMUM",evidence });
@@ -464,19 +468,33 @@ export class WeatherEngine {
     await audit({ ...begin,reason:rest && ["PAPER_FILLED","PAPER_SELL_FILLED"].includes(status) ? row.source : partial ? "PAPER_PARTIAL" : status,evidence });
   }
 
+  private visibleQuote(quote:LiveBook|undefined) {
+    if (!quote) return undefined;
+    return {bid:quote.book.bids[0]?.price ?? null,ask:quote.book.asks[0]?.price ?? null,
+      source:quote.rest?"REST_VERIFIED_PAPER":"WEBSOCKET_L2",at:quote.book.sourceAt};
+  }
+
   private async mark(banks: Bank[], at: number) {
+    const marks: object[] = [];
+    const liquidationBooks = new Map<string,Map<string,LiveBook>>();
+    const equity = [];
     for (const bank of banks) {
       const positions = this.positions.filter(p=>p.experiment===bank.experiment && p.strategy===bank.strategy);
       const values = positions.map(p=>{
         const event = this.data.get(p.event);
         const contract = event?.contracts.find(c=>c.condition===p.condition);
-        const book = event && this.quotesFor(event,at).get(p.token);
+        if (event && !liquidationBooks.has(event.id)) liquidationBooks.set(event.id,this.quotesFor(event,at));
+        const book = event && liquidationBooks.get(event.id)?.get(p.token);
         if (!contract?.fee || !book) return null;
         const fill = takeDepth(book,{minimum:book.rest?.minimum??contract.minimum,tick:book.rest?.tick??this.ws.tickSize(p.token,contract.tick)},"SELL",p.shares,.000001,contract.fee);
+        marks.push({experiment:p.experiment,strategy:p.strategy,token:p.token,shares:p.shares,basis:p.basis,
+          at,quote:this.visibleQuote(book),depth:book.book.bids.reduce((total,level)=>total+level.size,0),fill});
         return !fill || fill.partial ? null : fill.gross-fill.fee;
       });
-      await markBank(bank.experiment,bank.strategy,bank.cash,values.some(v=>v==null)?null:values.reduce<number>((s,v)=>s+(v??0),0),at);
+      equity.push({bank, liquidation:values.some(v=>v==null)?null:values.reduce<number>((s,v)=>s+(v??0),0)});
     }
+    await state("position_marks",{marks});
+    for (const {bank,liquidation} of equity) await markBank(bank.experiment,bank.strategy,bank.cash,liquidation,at);
   }
 
   private async heartbeat() {

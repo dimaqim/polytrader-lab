@@ -1,3 +1,5 @@
+import { setWeatherEntries, weatherPosition, weatherDecision, weatherJournal } from "./weather/details.ts";
+import { strategyKeys, type WeatherStrategy } from "../lib/weather/strategies.ts";
 import { weatherDashboard } from "./weather/web.ts";
 import { weatherScores } from "./weather/scoring.ts";
 import { changeExperiment, startExperiment } from "./weather/ledger.ts";
@@ -143,6 +145,28 @@ export async function web(req: Request, route: string[]) {
     }
     if (req.method === "GET" && action === "combos") return await combosFor(new URL(req.url));
     const user = sessionUser(req);
+    if (req.method === "GET" && ["weather/position","weather/decision","weather/journal"].includes(action)) {
+      if (!user) return json({error:"login_required"},401);
+      const query=new URL(req.url).searchParams;
+      if(action==="weather/journal") {
+        const since=query.get("since");
+        if(since && (!/^\d{4}-\d{2}-\d{2}$/.test(since) || !Number.isFinite(Date.parse(since)) ||
+          new Date(since).toISOString().slice(0,10)!==since)) return json({error:"invalid_request"},400);
+        return json(await weatherJournal(user,query));
+      }
+      const id=query.get("id")??"";
+      if(action==="weather/decision") {
+        if(!/^[a-f0-9]{64}$/.test(id)) return json({error:"invalid_request"},400);
+        const row=await weatherDecision(user,id);
+        return row ? json(row) : json({error:"not_found"},404);
+      }
+      const strategy=query.get("strategy")??"", token=query.get("token")??"";
+      if(!uuidPattern.test(id)||!/^\d{1,80}$/.test(token)||!strategyKeys.includes(strategy as WeatherStrategy)) {
+        return json({error:"invalid_request"},400);
+      }
+      const row=await weatherPosition(user,id,strategy,token);
+      return row ? json(row) : json({error:"not_found"},404);
+    }
     if (req.method === "GET" && action === "weather/scores") return json(await weatherScores(user));
     if (req.method === "GET" && action === "weather") return json(await weatherDashboard(user));
     if (req.method === "GET" && action === "workspace") {
@@ -186,6 +210,12 @@ export async function web(req: Request, route: string[]) {
     if (action === "weather/start") {
       const id = await startExperiment(user);
       return id ? json({ id }, 201) : json({ error: "weather_not_ready_or_active" }, 409);
+    }
+    if (action === "weather/strategy") {
+      if(typeof input.id!=="string" || !uuidPattern.test(input.id) || !strategyKeys.includes(input.strategy) ||
+        typeof input.paused!=="boolean") return json({error:"invalid_request"},400);
+      return await setWeatherEntries(user,input.id,input.strategy,input.paused)
+        ? json({ok:true}) : json({error:"strategy_unavailable"},409);
     }
     if (action === "weather/control") {
       if (typeof input.id !== "string" || !uuidPattern.test(input.id)
