@@ -1,6 +1,6 @@
 import { setWeatherEntries, weatherPosition, weatherDecision, weatherJournal } from "./weather/details.ts";
 import { strategyKeys, type WeatherStrategy } from "../lib/weather/strategies.ts";
-import { weatherDashboard } from "./weather/web.ts";
+import { weatherDashboard, weatherQuotes } from "./weather/web.ts";
 import { weatherScores } from "./weather/scoring.ts";
 import { changeExperiment, startExperiment } from "./weather/ledger.ts";
 import { notificationDefaults, saveWeatherNotifications } from "./weather/notifications.ts";
@@ -168,6 +168,11 @@ export async function web(req: Request, route: string[]) {
       return row ? json(row) : json({error:"not_found"},404);
     }
     if (req.method === "GET" && action === "weather/scores") return json(await weatherScores(user));
+    if (req.method === "GET" && action === "weather/quotes") {
+      const events=(new URL(req.url).searchParams.get("events")??"").split(",").filter(Boolean);
+      if(events.length>48||events.some(id=>!/^\d{1,18}$/.test(id)))return json({error:"invalid_request"},400);
+      return json(await weatherQuotes(user,events));
+    }
     if (req.method === "GET" && action === "weather") return json(await weatherDashboard(user));
     if (req.method === "GET" && action === "workspace") {
       if (!process.env.DATABASE_URL) return json({ error: "database_unconfigured" }, 503);

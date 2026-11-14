@@ -14,6 +14,9 @@ export class WeatherSocket {
   private target = new Map<string,string>();
   private session = "";
   private retry = 0;
+  private directFailures = 0;
+  private relayRetryAt = 0;
+  private connection: "direct" | "neon" = "direct";
   private waitUntil = 0;
   private ping = 0;
   private pong = 0;
@@ -121,6 +124,10 @@ export class WeatherSocket {
 
   private disconnect(reason: string) {
     this.lastError = reason;
+    if (this.socket && reason !== "PROCESS_STOPPED") {
+      if (this.connection === "direct") this.directFailures++;
+      else this.relayRetryAt = Date.now() + 5000;
+    }
     if (this.feed) this.counts.disconnected++;
     const socket = this.socket;
     this.socket = undefined;
@@ -141,8 +148,15 @@ export class WeatherSocket {
     if (!socket) {
       if (now < this.waitUntil || !this.target.size || !this.archiveOk) return;
       const started = Date.now();
-      this.report("connecting",{ attempt:this.retry+1, timeoutMs:30000 });
-      const next = new WebSocket(marketSocket, socketOptions((stage,details)=>this.report(stage,details)));
+      const relayUrl = process.env.WEATHER_RELAY_URL;
+      const secret = process.env.WEATHER_RELAY_SECRET;
+      const viaRelay = relayUrl && secret && this.directFailures > 0 && now >= this.relayRetryAt;
+      this.connection = viaRelay ? "neon" : "direct";
+      const timeout = viaRelay ? 8000 : relayUrl && secret ? 4500 : 30_000;
+      this.report("connecting",{ attempt:this.retry+1, timeoutMs:timeout, route:this.connection });
+      const options = socketOptions((stage,details)=>this.report(stage,details));
+      const next = new WebSocket(viaRelay ? relayUrl : marketSocket, { ...options, handshakeTimeout:timeout,
+        headers:viaRelay ? {"x-weather-relay-secret":secret} : undefined });
       this.socket = next;
       next.on("upgrade",res=>this.report("upgrade",{ status:res.statusCode,tookMs:Date.now()-started }));
       next.on("unexpected-response",(_req,res)=>{
@@ -233,7 +247,7 @@ export class WeatherSocket {
   tracks(token: string) { return this.target.has(token); }
   tickSize(token: string, fallback: number) { return this.ticks.get(token) ?? fallback; }
   status() {
-    return { process: true, socket: !!this.activeSession, subscribed: this.subscribed.size, ...this.counts,
+    return { process: true, socket: !!this.activeSession, route:this.connection, subscribed: this.subscribed.size, ...this.counts,
       sessionSnapshots:this.sessionSnapshots, sessionUpdates:this.sessionUpdates, invalidated:this.invalidated,
       transport:this.transport,lastPong:this.pong || null,lastQuote: this.lastQuote || null, error: this.lastError || null, archive: this.archiveOk };
   }

@@ -20,7 +20,7 @@ export function quoteIssue(q:Quote|undefined,now:number) {
   if (!q) return "Свежий стакан по этому контракту не получен";
   if (q.status&&q.status!=="FRESH") return quoteStatusText[q.status];
   if (q.at==null) return "Свежий стакан по этому контракту не получен";
-  if (now-q.at>75_000||q.at>now) return quoteStatusText.STALE;
+  if (now-q.at>15_000||q.at>now+500) return quoteStatusText.STALE;
   return null;
 }
 export type Mark = { experiment:string;strategy:WeatherStrategy;token:string;shares:number;basis:number;at:number;quote:Quote;
@@ -35,9 +35,11 @@ export type Fill = { id:string;experiment:string;strategy:WeatherStrategy;token:
 export type Decision = { id:string;experiment:string|null;strategy:WeatherStrategy|"system";city:string;kind:string;event:string;
   at:string;action:string;reason:string;reference:string|null;ev:string|null;market:WeatherEvent;evidence:Evidence };
 export type Readiness = { ready:boolean;process:boolean;source?:ExecutionSource;rest?:{lastResponse:number|null;error:string|null};
-  ws:{socket:boolean;subscribed:number;snapshots:number;updates:number;lastPong?:number|null;error:string|null};
+  ws:{socket:boolean;route?:"direct"|"neon";subscribed:number;snapshots:number;updates:number;lastQuote?:number|null;lastPong?:number|null;error:string|null};
   sources:Record<string,{ok:boolean;at:number;count?:number;error?:string}> };
 export type View = Estimate & {event:string;marketCoverage?:{total:number;priced:number;coherent:boolean};books:{condition:string;yes?:Quote;no?:Quote}[]};
+export type QuoteUpdate = Pick<View,"at"|"books"|"marketCoverage"> & {prices:{condition:string;market:number|null;blended:number|null}[]};
+export type LiveQuotes = {readiness:Feed["readiness"];snapshot:{at:number;markets:Record<string,QuoteUpdate>}|null;marks:Mark[]};
 export type Feed = { readiness:{checked_at:string;payload:Readiness}|null;
   live:{data:View[];opportunities?:WeatherStrategy[];wallets:{name:string;address:string}[];walletEvents:WalletEvent[]}|null;
   marks:Mark[];markets:WeatherEvent[];runs:Run[];banks:Bank[];positions:Position[];fills:Fill[];decisions:Decision[];
@@ -82,7 +84,7 @@ export const reasons:Record<string,string>={
 };
 export const reasonText=(reason:string)=>reasons[reason]??actionName[reason]??"Причина не расшифрована";
 export function currentMark(mark:Mark|null|undefined, position:Position, now=Date.now()) {
-  return mark && mark.at<=now && now-mark.at<=75_000 && mark.shares===position.shares && mark.basis===position.basis ? mark : null;
+  return mark && mark.at<=now+500 && now-mark.at<=15_000 && mark.shares===position.shares && mark.basis===position.basis ? mark : null;
 }
 export function liquidValue(mark:Mark|null, position:Position) {
   if(position.shares===0) return 0;

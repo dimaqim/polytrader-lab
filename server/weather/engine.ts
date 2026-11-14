@@ -11,6 +11,7 @@ import { calibrations, discover, ensemble, forecasts, hash, observations, verify
 import { WeatherSocket } from "./socket.ts";
 import { getRestBook, WeatherRest } from "./rest.ts";
 import { enqueueWeather, weatherReport } from "./notifications.ts";
+import { deliverNotifications } from "../telegram.ts";
 import { sampleForecasts } from "./scoring.ts";
 import baseline from "../../lib/weather/calibration.json" with { type: "json" };
 
@@ -56,10 +57,11 @@ export class WeatherEngine {
       this.periodic("metar", minute, () => this.readMetar(), deadline),
       this.periodic("forecast", 15 * minute, () => this.readForecast(false), deadline),
       this.periodic("ensemble", 2 * 3600_000, () => this.readForecast(true), deadline),
-      this.periodic("wallets", 2 * minute, () => this.readWallets(), deadline),
+      this.periodic("wallets", 15_000, () => this.readWallets(), deadline),
       this.periodic("rest", 3500, () => this.restTargets.length ? this.rest.refresh(this.restTargets) : Promise.resolve(0), deadline),
       this.periodic("engine", 250, () => this.engine(), deadline),
       this.periodic("heartbeat", 10_000, () => this.heartbeat(), deadline),
+      this.periodic("delivery", 2500, async () => this.persist ? deliverNotifications(undefined,false,true) : 0, deadline),
       this.periodic("notifications", minute, async () => {
         if (this.persist) await weatherReport(Date.now(), this.executionSource(Date.now())==="NO_EXECUTABLE_DATA");
         return 0;
@@ -117,7 +119,8 @@ export class WeatherEngine {
   private async catalog() {
     const held = this.persist ? await database()`select m.payload from weather.markets m where
       exists(select 1 from weather.positions p where p.event=m.id and p.shares>0)
-      or (exists(select 1 from weather.probability_samples s where s.event=m.id and s.observed_at>now()-interval '7 days')
+      or ((exists(select 1 from weather.probability_samples s where s.event=m.id and s.observed_at>now()-interval '7 days')
+        or exists(select 1 from weather.positions p where p.event=m.id and p.opened_at>now()-interval '7 days'))
         and exists(select 1 from jsonb_array_elements(m.payload->'contracts') c where c->>'payout' is null))` : [];
     const events = await discover(Date.now(), held.map(row => row.payload as WeatherEvent));
     if (this.persist) await archiveEvents(events);
@@ -242,6 +245,8 @@ export class WeatherEngine {
     const at = Date.now();
     const session = this.ws.activeSession;
     const marketViews: object[] = [];
+    const marketQuotes: Record<string, object> = {};
+    const sample = at >= this.persistAt;
     const opportunities = new Set<WeatherStrategy>();
     const scoreSamples: Parameters<typeof sampleForecasts>[0] = [];
     let skipped = 0;
@@ -270,15 +275,20 @@ export class WeatherEngine {
       if (!prior || cur.forecasts.map(x=>x.hash).join() !== prior.forecasts.map(x=>x.hash).join() || at - prior.at > 15 * minute) {
         this.estimates.set(event.id,cur);
       }
-      marketViews.push({ event: event.id, at, distribution: cur.distribution, observed: cur.observed, observation: cur.observation,
-        confidence: cur.confidence, forecasts: cur.forecasts, calibration: cur.calibration,
-        marketCoverage:{total:event.contracts.length,
-          priced:event.contracts.filter(c=>quotes.has(c.yes)).length, coherent:unified},
+      const marketCoverage={total:event.contracts.length,priced:event.contracts.filter(c=>quotes.has(c.yes)).length,coherent:unified};
+      const view = {
+        at, marketCoverage,
+        prices: marketCoverage.coherent && marketCoverage.priced===marketCoverage.total
+          ? cur.distribution.map(row=>({ condition:row.condition,market:row.market,blended:row.blended })) : [],
         books: event.contracts.map(c => ({
           condition:c.condition,
           yes:this.quoteStatus(c,c.yes,books.get(c.yes)),
           no:this.quoteStatus(c,c.no,books.get(c.no)),
-        })) });
+        })),
+      };
+      marketQuotes[event.id]=view;
+      if (sample) marketViews.push({ event: event.id, distribution: cur.distribution, observed: cur.observed, observation: cur.observation,
+        confidence: cur.confidence, forecasts: cur.forecasts, calibration: cur.calibration, ...view });
       if (cur.confidence) scoreSamples.push({event:event.id,end:event.end,at,distribution:cur.distribution});
       skipped++;
       const wallet = [...this.walletTrades.values()].filter(row => event.contracts.some(c => c.condition === row.condition))
@@ -296,10 +306,10 @@ export class WeatherEngine {
         if (session) await this.monitorComplete(event,banks,session,at);
       }
     }
-    if (at >= this.persistAt && this.persist) {
+    if (this.persist) await this.mark(banks,at,sample,marketQuotes);
+    if (sample && this.persist) {
       await state("markets", { data: marketViews, opportunities:[...opportunities], walletEvents: [...this.walletTrades.values()].slice(-100), wallets: [...this.verifiedWallets.values()] });
       await sampleForecasts(scoreSamples);
-      await this.mark(banks, at);
       this.persistAt = at + minute;
     }
     if (at >= this.reportAt) {
@@ -454,7 +464,7 @@ export class WeatherEngine {
       || (row.side==="BUY" && (at>=row.event.end || !this.data.get(row.event.id)?.verified))) {
       if(!rest && sameSession && c?.open && at<limitAt) return;
       this.pending.delete(id);
-      await audit({...begin,action:"SKIP",reason:"STALE_BOOK",evidence:{...row.evidence,source:row.source,executionBook:quote}});
+      await audit({...begin,key:row.wallet?.id??String(Math.floor(at/minute)),action:"SKIP",reason:"STALE_BOOK",evidence:{...row.evidence,source:row.source,executionBook:quote}});
       return;
     }
     this.pending.delete(id);
@@ -465,17 +475,18 @@ export class WeatherEngine {
       : Math.max(.001,row.reference-.015);
     const budget = row.side === "BUY" ? Math.min(risk.cost,row.bank.cash,risk.exposure-row.bank.exposure) : row.shares!;
     const fill = takeDepth(quote,{minimum:quote.rest?.minimum??c.minimum,tick:quote.rest?.tick??this.ws.tickSize(row.token,c.tick)},row.side,budget,target,fee);
-    const edge = row.side === "BUY" && row.bank.strategy !== "favorite" && !row.bank.strategy.startsWith("replay_")
-      ? (row.evidence as { candidate?: Candidate }).candidate?.conservative : null;
+    const candidate = (row.evidence as { candidate?: Candidate }).candidate;
     const latest = this.latestEstimates.get(row.event.id);
     const model = latest && at - latest.at <= 20_000 ? saleModel(latest,c,row.token) : null;
+    const requiresModel = row.side === "BUY" && row.bank.strategy !== "favorite" && row.bank.strategy !== "observation";
+    const edge = row.side !== "BUY" ? null : row.bank.strategy === "observation" ? candidate?.conservative : model?.lower;
     const netPerShare = fill && row.side === "SELL" ? (fill.gross-fill.fee)/fill.shares : null;
     const evidence = { ...row.evidence, reason:row.reason,source:row.source, entriesRevision:row.bank.entries_revision, executionBook:quote, fill, fee, readyAt:row.readyAt,
       expiresAt:quote.book.sourceAt+age, delayMs:quote.book.receivedAt - (row.evidence as { at?:number }).at!,
       executionFair:model?.fair, executionUpper:model?.upper, executionLower:model?.lower, netPerShare };
     let rejection: string | null = null;
     if (!fill) rejection = "NO_LIQUIDITY_OR_MINIMUM";
-    else if (edge != null && edge - (fill.gross+fill.fee)/fill.shares < risk.edge) rejection = "PRICE_MOVED";
+    else if (!replay && (requiresModel && edge==null || edge != null && edge - (fill.gross+fill.fee)/fill.shares < risk.edge)) rejection = "PRICE_MOVED";
     else if (replay && (!row.wallet || at-row.wallet.receivedAt>=120_000
       || !replayEntry(model?.lower??null,(fill.gross+fill.fee)/fill.shares,row.wallet.price,fill.price,risk.edge))) {
       rejection = "COPY_EDGE_LOST";
@@ -487,7 +498,7 @@ export class WeatherEngine {
       }
     }
     if (rejection || !fill) {
-      await audit({ ...begin,action:"SKIP",reason:rejection??"NO_LIQUIDITY_OR_MINIMUM",evidence });
+      await audit({ ...begin,key:row.wallet?.id??String(Math.floor(at/minute)),action:"SKIP",reason:rejection??"NO_LIQUIDITY_OR_MINIMUM",evidence });
       return;
     }
     const status = await postFill({ experiment:row.bank.experiment,strategy:row.bank.strategy,token:row.token,
@@ -513,7 +524,7 @@ export class WeatherEngine {
     };
   }
 
-  private async mark(banks: Bank[], at: number) {
+  private async mark(banks: Bank[], at: number, sample: boolean, marketQuotes: Record<string,object>) {
     const marks: object[] = [];
     const liquidationBooks = new Map<string,Map<string,LiveBook>>();
     const equity = [];
@@ -540,8 +551,10 @@ export class WeatherEngine {
       });
       equity.push({bank, liquidation:values.some(v=>v==null)?null:values.reduce<number>((s,v)=>s+(v??0),0)});
     }
-    await state("position_marks",{marks});
-    for (const {bank,liquidation} of equity) await markBank(bank.experiment,bank.strategy,bank.cash,liquidation,at);
+    const sql = database();
+    await sql`insert into weather.state(key,payload) values('position_marks',${JSON.stringify({marks})}),
+      ('quotes',${JSON.stringify({at,markets:marketQuotes})}) on conflict(key) do update set payload=excluded.payload,checked_at=now()`;
+    if (sample) for (const {bank,liquidation} of equity) await markBank(bank.experiment,bank.strategy,bank.cash,liquidation,at);
   }
 
   private async heartbeat() {

@@ -1,6 +1,20 @@
 import { database } from "../db.ts";
 import { notificationDefaults } from "./notifications.ts";
 
+export async function weatherQuotes(user: string | null, eventIds: string[]) {
+  const sql=database();
+  const [status, marks] = await sql.transaction([
+    sql`select key,checked_at,case when key='quotes' then jsonb_build_object('at',payload->'at','markets',
+      coalesce((select jsonb_object_agg(key,value) from jsonb_each(payload->'markets') where key=any(${eventIds}::text[])),'{}'))
+      else payload end payload from weather.state where key in ('readiness','quotes')`,
+    sql`select j.* from weather.state s cross join lateral jsonb_to_recordset(s.payload->'marks')
+      j(experiment uuid,strategy text,token text,shares float8,basis float8,at float8,quote jsonb,depth float8,fill jsonb,reason text,minimum float8)
+      join weather.experiments e on e.id=j.experiment where s.key='position_marks' and e.user_id=${user}`,
+  ]);
+  return { readiness:status.find(row=>row.key==='readiness')??null,
+    snapshot:status.find(row=>row.key==='quotes')?.payload??null, marks };
+}
+
 export async function weatherDashboard(user: string | null) {
   const sql = database();
   const [states, markets, runs, banks, positions, fills, decisions, equity, preferences, marks] = await sql.transaction([

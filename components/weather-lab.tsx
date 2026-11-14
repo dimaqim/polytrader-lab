@@ -4,7 +4,7 @@ import { useCallback,useEffect,useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { weatherStrategies,type WeatherStrategy } from "../lib/weather/strategies";
 import { resultMoney } from "./trade-journal";
-import { cityName,pct,strategyStatus,type Decision,type Feed,type JournalRow,type Position,type PositionDetail } from "./weather/data";
+import { cityName,pct,reasonText,strategyStatus,type Decision,type Feed,type JournalRow,type LiveQuotes,type Mark,type Position,type PositionDetail } from "./weather/data";
 import { Dashboard,EquityChart,equitySeries,Sources,StrategyResults } from "./weather/dashboard";
 import { lessons } from "./weather/education";
 import { defaultFilters,Journal } from "./weather/journal";
@@ -17,7 +17,8 @@ type Section=typeof sections[number][0];
 type Detail={type:"strategy";strategy:WeatherStrategy}|{type:"position";id:string;strategy:WeatherStrategy;token:string;title:string;fillId?:string}|{type:"decision";id:string};
 
 export function WeatherLab({authenticated}:{authenticated:boolean}) {
-  const [feed,setFeed]=useState<Feed|null>(null);
+  const [base,setFeed]=useState<Feed|null>(null);
+  const [quotes,setQuotes]=useState<LiveQuotes|null>(null);
   const [tab,setTab]=useState<Section>("overview");
   const [detail,setDetail]=useState<Detail|null>(null);
   const [error,setError]=useState("");
@@ -25,6 +26,15 @@ export function WeatherLab({authenticated}:{authenticated:boolean}) {
   const [city,setCity]=useState("");
   const [filters,setFilters]=useState(defaultFilters);
   const [now,setNow]=useState(()=>Date.now());
+  const snapshot=quotes?.snapshot;
+  const feed=base&&quotes ? {...base, marks:snapshot?quotes.marks:base.marks, readiness:quotes.readiness??base.readiness,
+    live:base.live?{...base.live,data:base.live.data.map(row=>{
+      const updated=snapshot?.markets[row.event];
+      if(!updated||updated.at<row.at)return row;
+      const prices=new Map(updated.prices.map(price=>[price.condition,price]));
+      return {...row,at:updated.at,books:updated.books,marketCoverage:updated.marketCoverage,
+        distribution:row.distribution.map(p=>({...p,market:prices.get(p.condition)?.market??null,blended:prices.get(p.condition)?.blended??null}))};
+    })}:null}:base;
   const refresh=useCallback(async(signal?:AbortSignal)=>{
     try {
       const response=await fetch("/api/weather",{cache:"no-store",signal});
@@ -74,6 +84,33 @@ export function WeatherLab({authenticated}:{authenticated:boolean}) {
   const showJournal=(strategy="",kind="open")=>{setDetail(null);setFilters({...filters,strategy,kind,page:0});setTab("journal");};
   const visibleMarkets=feed?.markets.filter(e=>(!city||e.station.city===city)&&((e.end>now&&e.contracts.some(c=>c.open))
     ||feed.positions.some(p=>p.event===e.id)))??[];
+  const quoteEvents=tab==="markets"?visibleMarkets.map(e=>e.id).join(","):"";
+  useEffect(()=>{
+    const controller=new AbortController();
+    let timer:ReturnType<typeof setTimeout>;
+    let loading=false;
+    const update=async()=>{
+      if(loading||controller.signal.aborted)return;
+      clearTimeout(timer);
+      if(document.hidden)return;
+      loading=true;
+      let delay=2500;
+      try {
+        const response=await fetch("/api/weather/quotes?events="+quoteEvents,{cache:"no-store",signal:controller.signal});
+        if(!response.ok)throw Error();
+        const fresh:LiveQuotes=await response.json();
+        if(!controller.signal.aborted)setQuotes(fresh);
+      }catch{delay=5000;}
+      finally {
+        loading=false;
+        if(!controller.signal.aborted&&!document.hidden){setNow(Date.now());timer=setTimeout(update,delay);}
+      }
+    };
+    const visible=()=>void update();
+    visible();
+    document.addEventListener("visibilitychange",visible);
+    return ()=>{controller.abort();clearTimeout(timer);document.removeEventListener("visibilitychange",visible);};
+  },[quoteEvents,authenticated]);
   const inTab=()=>{
     if(!feed)return <Empty>{error?"Данные пока недоступны.":"Загружаем данные…"}</Empty>;
     switch(tab) {
@@ -109,12 +146,13 @@ export function WeatherLab({authenticated}:{authenticated:boolean}) {
       {detail.type==="strategy"&&feed?<StrategyPanel strategy={detail.strategy} bank={banks.find(b=>b.strategy===detail.strategy)}
         run={run} feed={feed} now={now} busy={busy} onToggle={paused=>mutate("strategy",{id:run?.id,strategy:detail.strategy,paused})}
         showJournal={()=>showJournal(detail.strategy,"buys")}/>
-        :detail.type!=="strategy"&&<RemoteDetail key={JSON.stringify(detail)} detail={detail} now={now} feedOnline={!!feed?.readiness?.payload.process&&now-+new Date(feed.readiness.checked_at)<45000}/>}
+        :detail.type!=="strategy"&&<RemoteDetail key={JSON.stringify(detail)} detail={detail} now={now}
+          marks={snapshot?quotes?.marks:undefined} feedOnline={!!feed?.readiness?.payload.process&&now-+new Date(feed.readiness.checked_at)<45000}/>}
     </Sheet>}
   </section>;
 }
 
-function RemoteDetail({detail,now,feedOnline}:{detail:Exclude<Detail,{type:"strategy"}>;now:number;feedOnline:boolean}) {
+function RemoteDetail({detail,now,feedOnline,marks}:{detail:Exclude<Detail,{type:"strategy"}>;now:number;feedOnline:boolean;marks?:Mark[]}) {
   const [result,setResult]=useState<PositionDetail|Decision|null>(null);
   const [problem,setProblem]=useState("");
   const params=new URLSearchParams({id:detail.id,...(detail.type==="position"?{strategy:detail.strategy,token:detail.token}:{})});
@@ -135,13 +173,14 @@ function RemoteDetail({detail,now,feedOnline}:{detail:Exclude<Detail,{type:"stra
   },[url,detail.type]);
   if(!result)return <Empty>{problem||"Загружаем подробности…"}</Empty>;
   return <>{problem&&<p className="notice" role="status">{problem}</p>}
-    {detail.type==="position"&&"position" in result?<PositionPanel detail={result} now={now} fillId={detail.fillId} feedOnline={feedOnline}/>
+    {detail.type==="position"&&"position" in result?<PositionPanel detail={marks?{...result,mark:marks.find(m=>m.experiment===detail.id&&m.strategy===detail.strategy&&m.token===detail.token)??null}:result} now={now} fillId={detail.fillId} feedOnline={feedOnline}/>
       :"evidence" in result?<DecisionPanel row={result}/>:null}</>;
 }
 
 type Scores={accuracy:{horizon:number;n:number;paired:number;brier:number|null;logLoss:number|null;pairedWeatherBrier:number|null;marketBrier:number|null;
   bins:{bottom:number;top:number;n:number;predicted:number|null;observed:number|null}[]}[];
-  financial:{experiment:string;strategy:WeatherStrategy;n:number;interval:[number,number]|null}[]};
+  financial:{experiment:string;strategy:WeatherStrategy;n:number;interval:[number,number]|null}[];
+  exits:{experiment:string;reason:string;groups:number;sells:number;pnl:number;difference:number}[]};
 function Analysis({feed,run,banks,now,open}:{feed:Feed;run?:string;banks:Feed["banks"];now:number;open:(id:WeatherStrategy)=>void}) {
   const [scores,setScores]=useState<Scores|null>(null);
   const [failed,setFailed]=useState(false);
@@ -154,6 +193,7 @@ function Analysis({feed,run,banks,now,open}:{feed:Feed;run?:string;banks:Feed["b
     return ()=>c.abort();
   },[]);
   const financial=scores?.financial.find(x=>x.experiment===run&&x.strategy===selected);
+  const exits=scores?.exits?.filter(x=>x.experiment===run)??[];
   return <div className="weather-stack">
     <h2>Доходность стратегий</h2>
     <StrategyResults feed={feed} run={feed.runs.find(x=>x.id===run)} banks={banks} now={now} open={open}/>
@@ -162,6 +202,13 @@ function Analysis({feed,run,banks,now,open}:{feed:Feed;run?:string;banks:Feed["b
       <EquityChart rows={run?equitySeries(feed,run,[selected]):[]}/>
       <p className="muted">{financial?.interval?"95% интервал среднего результата на станцию и день от "+resultMoney(financial.interval[0])+" до "+resultMoney(financial.interval[1]):
         "Для доверительного интервала нужно 20 закрытых групп «станция и день». Сейчас "+(financial?.n??0)+"."}</p></section>
+    <section className="run"><h3>Продать раньше или ждать расчёта</h3>
+      {exits.length?exits.map(row=><div className="weather-model" key={row.reason}>
+        <strong>{reasonText(row.reason)}</strong>
+        <p>{row.sells} продаж · {row.groups} групп «станция и день» · результат {resultMoney(row.pnl)}</p>
+        <small>Продажа против удержания тех же контрактов · {resultMoney(row.difference)}</small>
+      </div>):<p className="muted">Сравнение появится после официального расчёта рынков, где бот продал контракты досрочно.</p>}
+    </section>
     <h2>Точность прогнозов</h2>
     {failed?<Empty>Не получилось загрузить оценки прогнозов.</Empty>:scores?.accuracy.some(row=>row.n>0)
       ?scores.accuracy.filter(row=>row.n>0).map(row=><article className="run" key={row.horizon}>

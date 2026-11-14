@@ -72,7 +72,7 @@ function Outcome({contract:c,live,now,held}:{contract:Contract;live?:View;now:nu
     <span><strong>{c.bucket.label}</strong>{held.includes(c.yes)||held.includes(c.no)?<small> · Есть позиция</small>:null}</span>
     <span>{pct(p?.p)}</span></summary>
     <p><strong>Прогноз погоды</strong> · {pct(p?.p)}</p>
-    {p?.market!=null && live && now-live.at<=75_000
+    {p?.market!=null && live && now-live.at<=15_000
       ? <p>Оценка по ценам рынка · {pct(p.market)} · Комбинированная · {pct(p.blended)}</p>
       : <p className="muted">Рыночная и комбинированная оценки пока недоступны. {marketIssue}</p>}
     {yesIssue&&yesIssue===noIssue ? <p className="weather-inline">{yesIssue}. Цены YES и NO пока не подтверждены.</p> :

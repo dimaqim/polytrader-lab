@@ -143,7 +143,7 @@ function saleAvailability(mark:Mark|null,previous:Mark|null,now:number,online:bo
   if(mark?.reason==="DEPTH_BELOW_MINIMUM") return "Покупатели есть, но их общий объём меньше минимальной заявки ("+qty(mark.minimum??0)+" шт.).";
   if(mark?.reason==="UNVERIFIED_LEVELS") return "Полученные заявки не прошли проверку допустимой цены и объёма.";
   if(!online) return "Сборщик пока не подтверждает свежие котировки.";
-  if(!mark&&previous&&now-previous.at>75_000) return "Проверка этого контракта устарела. Ждём следующий снимок.";
+  if(!mark&&previous&&now-previous.at>15_000) return "Проверка этого контракта устарела. Ждём следующий снимок.";
   return quoteIssue(mark?.quote,now) ?? "Объём для продажи ещё не подтверждён.";
 }
 

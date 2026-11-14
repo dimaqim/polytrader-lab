@@ -29,6 +29,7 @@ function appButton(text: string, section = "") {
 const menu = () => ({
   inline_keyboard: [
     appButton("Открыть журнал сделок", "history"),
+    appButton("Погода · позиции и цены", "weather"),
     appButton("Начать копировать", "start"),
     [...appButton("Трейдеры", "copy"), ...appButton("Комбо", "combos")],
     [{ text: "Мои тесты", callback_data: "tests" }, { text: "Помощь", callback_data: "help" }],
@@ -38,8 +39,8 @@ async function reply(chatId: string, text: string) {
   return telegram("sendMessage", { chat_id: chatId, text, reply_markup: menu() });
 }
 
-export async function deliverNotifications(signalId?: string, urgentOnly = false) {
-  if (!process.env.TELEGRAM_BOT_TOKEN) return;
+export async function deliverNotifications(signalId?: string, urgentOnly = false, weatherOnly = false) {
+  if (!process.env.TELEGRAM_BOT_TOKEN) return 0;
   const sql = database();
   for (let i = 0; i < 12; i++) {
     const rows = await sql`with candidate as (
@@ -48,6 +49,7 @@ export async function deliverNotifications(signalId?: string, urgentOnly = false
         and (payload->>'expires_at' is null or (payload->>'expires_at')::timestamptz>now())
         and (${signalId ?? null}::text is null or payload->>'signal_id'=${signalId ?? null})
         and (not ${urgentOnly}::boolean or key like 'signal:%')
+        and (not ${weatherOnly}::boolean or key like 'weather:%')
         and key not like 'health:%' and key not like 'collector:%'
         and not exists (
           select 1 from lab.decisions d join lab.signals s on s.id=d.signal left join lab.markets m on m.condition=s.condition
@@ -63,12 +65,12 @@ export async function deliverNotifications(signalId?: string, urgentOnly = false
       order by (payload->>'expires_at')::timestamptz nulls last,next_at limit 1 for update skip locked
     ) update lab.outbox o set lease_at=now(),attempts=attempts+1 from candidate c where o.key=c.key returning o.*`;
     const row = rows[0];
-    if (!row) return;
+    if (!row) return i;
     const payload = row.payload as Message & { expires_at?: string; section?: string };
     try {
       if (payload.expires_at && Date.parse(payload.expires_at) <= Date.now()) continue;
       const section = payload.section ?? "history";
-      const actions = { inline_keyboard: [appButton(section === "combos" ? "Открыть комбо" : "Открыть журнал", section)] };
+      const actions = { inline_keyboard: [appButton(section === "combos" ? "Открыть комбо" : section === "weather" ? "Открыть погоду" : "Открыть журнал", section)] };
       await telegram("sendMessage", { chat_id: row.chat_id, text: payload.text, reply_markup: payload.reply_markup ?? actions });
       await sql`update lab.outbox set sent_at=now() where key=${row.key}`;
     } catch (error) {
@@ -77,9 +79,10 @@ export async function deliverNotifications(signalId?: string, urgentOnly = false
       await sql`update lab.outbox set lease_at=null,next_at=now()+${wait}*interval '1 second',
         attempts=case when ${message.includes("HTTP 403")} then 6 else attempts end where key=${row.key}`;
       await log("telegram_delivery", error);
-      if (message.includes("HTTP 429")) return;
+      if (message.includes("HTTP 429")) return i;
     }
   }
+  return 12;
 }
 
 async function commandReply(action: string, user: string) {
@@ -88,6 +91,22 @@ async function commandReply(action: string, user: string) {
     case "start": return "В журнале видно, кого вы копируете, когда вошли и чем закончилась сделка. Для первого теста выберите «Начать копировать». Все суммы виртуальные.";
     case "help": return "Выберите трейдера и сумму на одну сделку. Бот замечает его покупки и проверяет текущую цену, доступный объём и лимиты вашего теста.\n\nВ режиме «С подтверждением» бот спросит перед покупкой. Позиция закрывается после официального расчёта рынка. Продажи трейдера не копируются.";
     case "status": return systemHealth();
+    case "weather": {
+      const [status, runs] = await sql.transaction([
+        sql`select checked_at,payload->>'source' source, payload->'ws'->>'route' route from weather.state where key='readiness'`,
+        sql`select e.ends_at,e.status, count(*) filter(where p.shares>0)::int opened,coalesce(sum(p.realized),0)::float8 pnl
+          from (select id,ends_at,status from weather.experiments where user_id=${user} order by starts_at desc limit 1) e
+          left join weather.positions p on p.experiment=e.id group by e.ends_at,e.status`,
+      ]);
+      const feed=status[0];
+      const run=runs[0];
+      const money=(value:number)=>(value<0?"−":"+")+"$"+Math.abs(value).toFixed(2);
+      const live=feed&&Date.now()- +new Date(feed.checked_at)<45_000;
+      const source=live&&feed.source==='WEBSOCKET_L2' ? feed.route==='neon'?"Поток Polymarket через Neon":"Прямой поток Polymarket"
+        :live&&feed.source==='REST_VERIFIED_PAPER'?"Резервные снимки Polymarket":"Ожидаем свежие котировки";
+      return ["Weather Lab · виртуальный тест",source,run ? `Открыто позиций ${run.opened} · зафиксировано ${money(run.pnl)}` : "Погодный тест ещё не запущен.",
+        "Откройте «Погода», чтобы увидеть цены, время входа и условия выхода."].join("\n");
+    }
     case "strategies":
     case "tests": {
       const rows = await sql`select e.strategy,e.mode,e.paused,e.risk_blocked,e.ends_at,w.name

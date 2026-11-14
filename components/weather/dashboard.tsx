@@ -48,7 +48,7 @@ export function Dashboard({feed,run,banks,now,authenticated,busy,mutate,openPosi
       <div><h2>Виртуальная торговля</h2><p>{run ? "14-дневный эксперимент" : "Эксперимент Weather Lab"}</p></div>
       <span className={"trade-state "+(active&&run?.status==="running"&&ready?"active":"")}>{status}</span></div>
       <div className="weather-health-line"><span>{source?sourceName[source]:online?"Ожидаем котировки":"Сборщик недоступен"}</span>
-        {feed.readiness?.payload.ws.socket&&<span>Канал открыт</span>}
+        {feed.readiness?.payload.ws.socket&&<span>{feed.readiness.payload.ws.route==="neon"?"Поток через Neon":"Прямой поток"}</span>}
         {source!=="REST_VERIFIED_PAPER"&&feed.readiness?.payload.rest?.lastResponse&&!feed.readiness.payload.ws.socket&&<span>REST отвечает</span>}
         {active&&run&&<span>До конца входов {timeLeft(+new Date(run.ends_at),now)}</span>}</div>
       {online&&feed.readiness&&<p className="muted">Проверка источников {dateTime(feed.readiness.checked_at)} по Киеву{!ready?" · новые входы ждут данных":""}</p>}
@@ -124,7 +124,8 @@ export function Sources({view,feed,source,busy,mutate}:{view?:Readiness;feed:Fee
   return <div className="weather-stack">
     <article className="run"><h3>Исполнение по Polymarket</h3>
       <p>Источник · {sourceName[source as keyof typeof sourceName]??"Ожидание данных"}</p>
-      <p>WebSocket · {view?.ws.socket?"Открыт":"Ожидает подключения"} · {view?.ws.subscribed??0} подписок</p>
+      <p>WebSocket · {view?.ws.socket?(view.ws.route==="neon"?"Подключён через Neon":"Подключён напрямую"):"Ожидает подключения"} · {view?.ws.subscribed??0} контрактов</p>
+      {view?.ws.lastQuote&&<p>Последнее сообщение Polymarket · {dateTime(view.ws.lastQuote)} по Киеву</p>}
       <p>REST · {view?.rest?.lastResponse?dateTime(view.rest.lastResponse):"Ожидание ответа"}</p>
       {view?.ws.error&&<p className="muted">{view.ws.error}</p>}{view?.rest?.error&&<p className="muted">{view.rest.error}</p>}
     </article>
