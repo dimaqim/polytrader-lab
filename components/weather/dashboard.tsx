@@ -62,10 +62,11 @@ export function Dashboard({feed,run,banks,now,authenticated,busy,mutate,openPosi
     </section>
     {banks.length>0&&<section className="run"><h3>Сводка по виртуальным банкам</h3><Facts items={[
       ["Стартовый банк",money(sum("initial"))],["Свободно",money(sum("cash"))],["Вложено в позиции",money(sum("locked"))],
-      ["Реализовано",<Result value={sum("realized")}/>],["PnL открытых позиций",<Result value={subtotal}/>],
-      ["Общий PnL",<Result value={subtotal==null?null:subtotal+sum("realized")}/>],
+      ["Зафиксированный результат",<Result value={sum("realized")}/>],
+      ["Результат при продаже открытых",subtotal==null?"Оценены не все":<Result value={subtotal}/>],
+      ["Общий результат",subtotal==null?"Оценены не все":<Result value={subtotal+sum("realized")}/>],
     ]}/><p className="muted">Сумма {banks.length} независимых банков по {money(banks[0].initial)}. Стратегии могут входить в один рынок параллельно.</p>
-      {openPositions.length>0&&<p className="muted">Полная продажа подтверждена для {assessed.length} из {openPositions.length} открытых позиций.
+      {openPositions.length>0&&<p className="muted">Цена продажи всего остатка рассчитана для {assessed.length} из {openPositions.length} открытых позиций.
         {subtotal==null&&assessed.length>0?<> По оценённой части <Result value={assessed.reduce((sum,x)=>sum+x.profit,0)}/>.</>:null}
         {subtotal==null?" Общий результат появится, когда подтверждён весь остаток.":""}</p>}
       {lastMark>0&&<p className="muted">Проверка продажи {dateTime(lastMark)} по Киеву.</p>}

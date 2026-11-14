@@ -355,6 +355,9 @@ input:not([type=checkbox]), select {
 
 .weather-position-summary { border-top:3px solid var(--action); }
 .weather-sheet-body .weather-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.weather-sheet-body .trade-details .weather-kpis { padding-bottom:0; }
+.weather-sheet-body .trade-details .weather-kpis > div { display:block; padding:9px 10px; }
+.weather-sheet-body .trade-details .weather-kpis dd { text-align:start; }
 .weather-sheet-body h4 { font-size:14px; font-weight:850; margin-block:12px 5px; }
 .weather-sheet-body .run > details:first-child { margin-top:0; padding-top:0; border-top:0; }
 .weather-outcome .weather-inline { margin-inline:0; }

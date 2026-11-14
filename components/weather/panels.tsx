@@ -186,7 +186,7 @@ export function PositionPanel({detail,now,fillId,feedOnline}:{detail:PositionDet
       <a className="weather-link" href={marketUrl(p.market,contract?.slug)} target="_blank" rel="noreferrer">Открыть рынок на Polymarket <ArrowUpRight size={14}/></a>
       {selected?.side==="BUY"&&<div className="weather-inline"><strong>{actionName[selected.side]} · {dateTime(selected.at)}</strong><p>{price(selected.gross/selected.shares)} · {qty(selected.shares)} шт. · комиссия {money(selected.fee)}</p></div>}
     </section>
-    {fills.some(fill=>fill.side!=="BUY")&&<section className="run"><h3>Почему закрыли позицию</h3>
+    {fills.some(fill=>fill.side!=="BUY")&&<section className="run"><h3>{open?"Почему продали часть позиции":"Почему закрыли позицию"}</h3>
       {(selected&&selected.side!=="BUY"?[selected]:fills.filter(fill=>fill.side!=="BUY")).map(fill=><SaleDetail key={fill.id} fill={fill}/>)}
     </section>}
     {open&&<section className="run"><h3>Когда закроется</h3>
