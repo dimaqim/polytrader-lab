@@ -16,6 +16,11 @@ export function restRecheck(signal: LiveBook, quote: LiveBook | undefined, token
     && quote.rest.requestedAt>=readyAt && quote.book.sourceAt>=signal.book.sourceAt;
 }
 
+export function restAfterStream(signal:LiveBook, quote:LiveBook|undefined, token:string, condition:string, readyAt:number, at:number) {
+  return signal.book.source==="ws" && signal.book.asset===token && restFresh(quote,token,at)
+    && quote.rest.condition===condition && quote.rest.requestedAt>=readyAt && quote.book.sourceAt>=signal.book.sourceAt;
+}
+
 export type PaperFill = { shares: number; gross: number; fee: number; price: number; partial: boolean };
 
 export function executable(quote: LiveBook | undefined, session: string | null, token: string, at: number, age: number,
