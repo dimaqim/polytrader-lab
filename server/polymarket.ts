@@ -108,8 +108,8 @@ export async function orderBook(asset: string) {
   }
 }
 export type Page<T> = { data: T[]; pagination: { next_cursor: string | null; has_more: boolean } };
-export function page<T>(path: string, params: Record<string, string>) {
-  return request<Page<T>>(data + path + "?" + new URLSearchParams(params));
+export function page<T>(path: string, params: Record<string, string>, get = fetch) {
+  return request<Page<T>>(data + path + "?" + new URLSearchParams(params), get);
 }
 export type Activity = {
   id?: string; sequence_id?: string | number; transaction_hash: string; timestamp: number; type: string;

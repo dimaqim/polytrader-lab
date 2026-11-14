@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dayBounds, parseBucket, parseMetar, roundedTemperature, stations, exhaustive, verifyRules } from "../lib/weather/rules.ts";
 import { estimate } from "../lib/weather/probability.ts";
-import { executable, payoffTable, takeDepth } from "../lib/weather/execution.ts";
+import { executable, payoffTable, restRecheck, takeDepth } from "../lib/weather/execution.ts";
 import { clusteredInterval, forecastScore } from "../lib/weather/scoring.ts";
 import type { Forecast, LiveBook, WeatherEvent } from "../lib/weather/types.ts";
 
@@ -82,4 +82,22 @@ test("Weather scores use resolved events and a minimum count of independent fina
   assert.equal(forecastScore([.8,.3],0),null);
   assert.equal(clusteredInterval(Array(19).fill(2)),null);
   assert.deepEqual(clusteredInterval(Array(20).fill(2)),[2,2]);
+});
+
+test("REST recheck requires a distinct request sent after the delay and rejects stale or future depth", () => {
+  const t=Date.now();
+  const rest = (id:string, request:number, received:number, sourceAt:number) => ({
+    session:"rest-session", book:{asset:"token",source:"rest" as const,sourceAt,receivedAt:received,
+      bids:[{price:.4,size:10}],asks:[{price:.5,size:10}]},
+    rest:{requestId:id,requestedAt:request,receivedAt:received,minimum:5,tick:.01,condition:"condition",hash:"hash"},
+  });
+  const signal=rest("first",t-100,t,t);
+  const ready=t+1000, end=t+1250;
+  const quote=rest("second",ready,ready+100,ready+50);
+  assert.equal(restRecheck(signal,quote,"token",ready,end),true);
+  assert.equal(restRecheck(signal,{...quote,session:"new"}, "token",ready,end),false);
+  assert.equal(restRecheck(signal,rest("second",ready-1,end,ready),"token",ready,end),false);
+  assert.equal(restRecheck(signal,rest("first",ready,end,ready),"token",ready,end),false);
+  assert.equal(restRecheck(signal,rest("second",ready,end,end+1),"token",ready,end),false);
+  assert.equal(restRecheck(signal,quote,"token",ready,end+6500),false);
 });

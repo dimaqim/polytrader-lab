@@ -77,3 +77,16 @@ test("BTC v1 uses the exact T−60/T−30 cutoff and rejects post-window, stale 
   assert.equal(btcObservation([{ ...books[0]!, receivedAt: now + 1 }, books[1]], now, now + 40, .9, true).selection, null);
   assert.equal(btcObservation(books, now + 4001, now + 4001, .9, true).selection, null);
 });
+
+test("weather can quarantine one token until a new snapshot without exposing its bad depth", () => {
+  const feed = new MarketFeed(true);
+  feed.subscribe(assets);
+  ingest(feed, [snapshot("1001", now, .9, .95), snapshot("1002", now, .04, .1)], now);
+  const result=ingest(feed, delta(now+1, change(.85,10,"SELL",.9,.85)), now+2);
+  assert.deepEqual(result.invalidated,[{asset:"1001",reason:"book_out_of_sync"}]);
+  assert.equal(result.fault,undefined);
+  assert.equal(feed.book("1001"),undefined);
+  assert.equal(feed.book("1002")?.asks[0].price,.1);
+  assert.equal(ingest(feed,delta(now+3,change(.9,20,"BUY",.9,.95)),now+3).ignored,1);
+  assert.equal(ingest(feed,snapshot("1001",now+4,.9,.95),now+5).snapshots,1);
+});

@@ -23,6 +23,7 @@
     "collector:launchd": "node scripts/collector-control.mjs launchd",
     "collector:check": "node --env-file-if-exists=.env.local scripts/collector.ts --probe=600",
     "weather": "node --env-file-if-exists=.env.local scripts/weather-collector.ts",
+    "weather:network": "node --env-file-if-exists=.env.local scripts/weather-network-check.ts",
     "weather:check": "node --env-file-if-exists=.env.local scripts/weather-collector.ts --probe",
     "weather:start": "node scripts/collector-control.mjs start --weather",
     "weather:stop": "node scripts/collector-control.mjs stop --weather",

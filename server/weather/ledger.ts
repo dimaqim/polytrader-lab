@@ -12,7 +12,7 @@ export async function state(key: string, payload: object) {
 
 export async function startExperiment(user: string) {
   const sql = database();
-  const config = { version: 1, strategies: strategyKeys, ...risk };
+  const config = { version: 2, strategies: strategyKeys, execution: ["WEBSOCKET_L2","REST_VERIFIED_PAPER"], ...risk };
   const [result] = await sql`select weather.start_experiment(${user},${JSON.stringify(config)},${strategyKeys}::text[]) as experiment`;
   return result?.experiment as string | undefined;
 }

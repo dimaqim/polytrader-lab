@@ -23,7 +23,9 @@ export type Estimate = {
   at: number; distribution: Probability[]; forecasts: { model: string; value: number; weight: number; receivedAt: number; hash: string }[];
   observed: number | null; observation: Observation | null; confidence: boolean; calibration: Calibration[];
 };
-export type LiveBook = { session: string; book: Book };
+export type ExecutionSource = "WEBSOCKET_L2" | "REST_VERIFIED_PAPER" | "NO_EXECUTABLE_DATA";
+export type RestProof = { requestId:string; requestedAt:number; receivedAt:number; minimum:number; tick:number; hash:string; condition:string };
+export type LiveBook = { session: string; book: Book; rest?:RestProof };
 export type WalletEvent = {
   id: string; wallet: string; name: string; condition: string; token: string; side: string;
   type: string; at: number; receivedAt: number; price: number; shares: number; value: number;

@@ -1,3 +1,4 @@
+import { weatherFetch } from "./network.ts";
 import { createHash } from "node:crypto";
 import { dayBounds, exhaustive, localDate, parseBucket, parseMetar, stations, verifyRules } from "../../lib/weather/rules.ts";
 import type { Calibration, Forecast, Observation, WalletEvent, WeatherEvent } from "../../lib/weather/types.ts";
@@ -63,10 +64,10 @@ function flightEvent(html: string, slug: string): Raw | null {
 
 async function getEvent(slug: string): Promise<Raw | null> {
   try {
-    return await request<Raw>("https://gamma-api.polymarket.com/events/slug/" + slug, fetch, 1);
+    return await request<Raw>("https://gamma-api.polymarket.com/events/slug/" + slug, weatherFetch, 1);
   } catch {
     // The public event page carries the same catalog fields. Execution still requires a live CLOB session.
-    const response = await fetch("https://polymarket.com/event/" + slug, { signal: AbortSignal.timeout(8_000) });
+    const response = await weatherFetch("https://polymarket.com/event/" + slug, { signal: AbortSignal.timeout(8_000) });
     if (response.status === 404) return null;
     if (!response.ok) throw new Error("Polymarket event HTTP " + response.status);
     return flightEvent(await response.text(), slug);
@@ -168,15 +169,15 @@ export async function verifyWallet(name: string) {
   try {
     candidate ??= (await request<{ profiles?: Profile[] }>(base + "/public-search?" + new URLSearchParams({
       q: name, search_profiles: "true", limit_per_type: "10",
-    }), fetch, 1)).profiles?.find(row => [row.name, row.pseudonym].some(label => label?.toLowerCase() === name.toLowerCase()))?.proxyWallet;
+    }), weatherFetch, 1)).profiles?.find(row => [row.name, row.pseudonym].some(label => label?.toLowerCase() === name.toLowerCase()))?.proxyWallet;
     if (!candidate || !/^0x[a-f\d]{40}$/i.test(candidate)) throw new Error("Profile address missing");
-    const profile = await request<Profile>(base + "/public-profile?address=" + candidate, fetch, 1);
+    const profile = await request<Profile>(base + "/public-profile?address=" + candidate, weatherFetch, 1);
     if (profile.proxyWallet?.toLowerCase() === candidate.toLowerCase()
       && [profile.name, profile.pseudonym].some(label => label?.toLowerCase() === name.toLowerCase())) {
       return { name, address: candidate.toLowerCase() };
     }
   } catch {}
-  const response = await fetch("https://polymarket.com/@" + encodeURIComponent(name), { signal: AbortSignal.timeout(7_000) });
+  const response = await weatherFetch("https://polymarket.com/@" + encodeURIComponent(name), { signal: AbortSignal.timeout(7_000) });
   if (!response.ok) return null;
   const data = flightData(await response.text());
   const exact = [...data.matchAll(/"username":("(?:[^"\\]|\\.)*"),"primaryAddress":"(0x[a-f\d]{40})","proxyAddress":"(0x[a-f\d]{40})"/ig)]
@@ -184,7 +185,7 @@ export async function verifyWallet(name: string) {
   const addresses = [...new Set(exact.map(match => match[3].toLowerCase()))];
   if (addresses.length !== 1 || (known && known !== addresses[0])) return null;
   const address = addresses[0];
-  const verify = await page<Activity>("/activity",{user:address,limit:"1"});
+  const verify = await page<Activity>("/activity",{user:address,limit:"1"},weatherFetch);
   return Array.isArray(verify.data) ? { name,address } : null;
 }
 
@@ -193,7 +194,7 @@ export async function walletActivity(wallet: { name: string; address: string }, 
   let cursor: string | null = null;
   const found: WalletEvent[] = [];
   for (let i = 0; i < 3; i++) {
-    const result: Page<Activity> = await page<Activity>("/activity", { ...params, ...(cursor ? { cursor } : {}) });
+    const result: Page<Activity> = await page<Activity>("/activity", { ...params, ...(cursor ? { cursor } : {}) },weatherFetch);
     const receivedAt = Date.now();
     found.push(...result.data.flatMap(row => {
       const at = timestamp(row.timestamp);

@@ -1,5 +1,20 @@
 import { freshBook, takerFee, type Fee } from "../simulator.ts";
-import type { Contract, LiveBook } from "./types.ts";
+import type { Contract, ExecutionSource, LiveBook } from "./types.ts";
+
+export const restAge = 6000;
+export type TradingSource = Exclude<ExecutionSource,"NO_EXECUTABLE_DATA">;
+
+export function restFresh(quote: LiveBook | undefined, token: string, at: number): quote is LiveBook & {rest:NonNullable<LiveBook["rest"]>} {
+  return !!quote?.rest && quote.book.source==="rest" && quote.book.asset===token
+    && quote.rest.receivedAt===quote.book.receivedAt && quote.rest.requestedAt<=quote.rest.receivedAt
+    && quote.rest.receivedAt-quote.rest.requestedAt<=3500 && freshBook(quote.book,at,restAge);
+}
+
+export function restRecheck(signal: LiveBook, quote: LiveBook | undefined, token: string, readyAt: number, at: number) {
+  return restFresh(quote,token,at) && !!signal.rest && quote.session===signal.session
+    && quote.rest.condition===signal.rest.condition && quote.rest.requestId!==signal.rest.requestId
+    && quote.rest.requestedAt>=readyAt && quote.book.sourceAt>=signal.book.sourceAt;
+}
 
 export type PaperFill = { shares: number; gross: number; fee: number; price: number; partial: boolean };
 

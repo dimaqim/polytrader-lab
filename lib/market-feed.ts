@@ -3,7 +3,7 @@ import type { Book, Level, MakerPrint } from "./simulator.ts";
 type Packet = Record<string, unknown>;
 type Trade = MakerPrint & { sourceAt: number; transactionHash?: string; feeRateBps?: number };
 type Cursor = { at: number; keys: Set<string> };
-type Result = { quotes: Book[]; trades: Trade[]; fault?: string; ignored: number; snapshots: number };
+type Result = { quotes: Book[]; trades: Trade[]; fault?: string; invalidated?: {asset:string;reason:string}[]; ignored: number; snapshots: number };
 
 function object(value: unknown): Packet | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Packet : null;
@@ -46,6 +46,20 @@ export class MarketFeed {
   private quoteCursors = new Map<string, Cursor>();
   private tradeCursors = new Map<string, Cursor>();
   private prints = new Map<string, Trade[]>();
+  private isolateAssets = false;
+
+  constructor(isolateAssets = false) { this.isolateAssets = isolateAssets; }
+
+  private recover(asset: string, reason: string, result: Result) {
+    if (!this.isolateAssets) return false;
+    this.books.delete(asset);
+    this.quoteCursors.delete(asset);
+    this.tradeCursors.delete(asset);
+    this.prints.delete(asset);
+    result.invalidated ??= [];
+    result.invalidated.push({asset,reason});
+    return true;
+  }
 
   subscribe(assets: ReadonlyMap<string, string>) {
     for (const [asset, condition] of this.assets) {
@@ -109,7 +123,10 @@ export class MarketFeed {
         const key = JSON.stringify(changes.map(c => [c.side, c.price, c.size, c.hash, c.best_bid, c.best_ask]));
         const sequence = this.cursor(this.quoteCursors, asset, at, key);
         if (sequence === "duplicate") { result.ignored++; continue; }
-        if (sequence !== "new") return "out_of_order_quote";
+        if (sequence !== "new") {
+          if (this.recover(asset,"out_of_order_quote",result)) continue;
+          return "out_of_order_quote";
+        }
         let { bids, asks } = current;
         for (const change of changes) {
           const price = number(change.price), size = number(change.size);
@@ -122,7 +139,10 @@ export class MarketFeed {
         const bid = bids[0]?.price ?? 0, ask = asks[0]?.price ?? 1;
         if (bid >= ask
           || (last.best_bid != null && number(last.best_bid) !== bid)
-          || (last.best_ask != null && number(last.best_ask) !== ask)) return "book_out_of_sync";
+          || (last.best_ask != null && number(last.best_ask) !== ask)) {
+          if (this.recover(asset,"book_out_of_sync",result)) continue;
+          return "book_out_of_sync";
+        }
         const book = { ...current, bids, asks, sourceAt: at, receivedAt };
         this.books.set(asset, book);
         result.quotes.push(book);
@@ -155,7 +175,10 @@ export class MarketFeed {
     const transactionHash = typeof event.transaction_hash === "string" ? event.transaction_hash : undefined;
     const sequence = this.cursor(this.tradeCursors, asset, at, JSON.stringify([transactionHash, side, price, size]));
     if (sequence === "duplicate") { result.ignored++; return; }
-    if (sequence !== "new") return "out_of_order_trade";
+    if (sequence !== "new") {
+      if (this.isolateAssets && sequence==="older") { result.ignored++; return; }
+      return "out_of_order_trade";
+    }
     const fee = number(event.fee_rate_bps);
     const trade: Trade = { side, price, size, sourceAt: at, receivedAt, transactionHash, feeRateBps: Number.isFinite(fee) ? fee : undefined };
     const history = this.prints.get(asset) ?? [];

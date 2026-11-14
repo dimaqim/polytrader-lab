@@ -4,6 +4,7 @@ import { createGzip } from "node:zlib";
 import WebSocket from "ws";
 import { MarketFeed } from "../../lib/market-feed.ts";
 import type { LiveBook, WeatherEvent } from "../../lib/weather/types.ts";
+import { socketOptions } from "./network.ts";
 import { marketSocket } from "../polymarket.ts";
 
 export class WeatherSocket {
@@ -24,6 +25,16 @@ export class WeatherSocket {
   private ticks = new Map<string, number>();
   private sessionSnapshots = 0;
   private sessionUpdates = 0;
+  private transport = { stage:"idle", at:0, details:{} as object };
+  private pendingSubscriptions: string[] = [];
+  private subscribeAt = 0;
+  private repair = new Map<string,number>();
+  private invalidated=0;
+
+  private report(stage: string, details: object) {
+    this.transport = { stage,at:Date.now(),details };
+    console.log(JSON.stringify({at:new Date().toISOString(),...details,source:"weather_ws",stage}));
+  }
   readonly counts = { opened: 0, snapshots: 0, updates: 0, disconnected: 0 };
   lastError = "";
   lastQuote = 0;
@@ -43,14 +54,25 @@ export class WeatherSocket {
   private sync() {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN || !this.feed) return;
     const removed = [...this.subscribed.keys()].filter(key => !this.target.has(key));
-    const added = [...this.target.keys()].filter(key => !this.subscribed.has(key));
-    if (!removed.length && !added.length) return;
-    this.feed.subscribe(this.target);
-    if (removed.length) this.socket.send(JSON.stringify({ assets_ids: removed, operation: "unsubscribe" }));
-    if (added.length) this.socket.send(JSON.stringify(this.subscribed.size
-      ? { assets_ids: added, operation: "subscribe" } : { assets_ids: added, type: "market", custom_feature_enabled: true }));
-    this.record({ subscribe: added, unsubscribe: removed });
-    this.subscribed = new Map(this.target);
+    if (removed.length) {
+      this.socket.send(JSON.stringify({ assets_ids:removed, operation:"unsubscribe" }));
+      for (const key of removed) { this.subscribed.delete(key); this.ticks.delete(key); }
+      this.feed.subscribe(this.subscribed);
+      this.record({ unsubscribe:removed });
+    }
+    this.pendingSubscriptions = [...this.target.keys()].filter(key=>!this.subscribed.has(key) && !this.repair.has(key));
+    if (this.pendingSubscriptions.length && !this.subscribed.size) this.subscribe(true);
+  }
+
+  private subscribe(initial = false) {
+    if (!this.feed || this.socket?.readyState !== WebSocket.OPEN || !this.pendingSubscriptions.length) return;
+    const added = this.pendingSubscriptions.splice(0, initial ? 1 : 32);
+    for (const key of added) this.subscribed.set(key,this.target.get(key)!);
+    this.feed.subscribe(this.subscribed);
+    this.socket.send(JSON.stringify(initial ? {assets_ids:added,type:"market",custom_feature_enabled:true}
+      : {assets_ids:added,operation:"subscribe",custom_feature_enabled:true}));
+    this.subscribeAt = Date.now() + (initial ? 750 : 250);
+    this.record({subscribe:added});
   }
 
   private rotate() {
@@ -104,6 +126,8 @@ export class WeatherSocket {
     this.socket = undefined;
     this.feed = undefined;
     this.subscribed.clear();
+    this.pendingSubscriptions = [];
+    this.repair.clear();
     this.ticks.clear();
     if (this.archive && this.archiveOk) this.archive.write(JSON.stringify({ at: Date.now(), session: this.session,
       sequence: ++this.sequence, disconnect: reason }) + "\n");
@@ -116,13 +140,23 @@ export class WeatherSocket {
     const socket = this.socket;
     if (!socket) {
       if (now < this.waitUntil || !this.target.size || !this.archiveOk) return;
-      const next = new WebSocket(marketSocket, { handshakeTimeout: 8000, maxPayload: 4_000_000 });
+      const started = Date.now();
+      this.report("connecting",{ attempt:this.retry+1, timeoutMs:30000 });
+      const next = new WebSocket(marketSocket, socketOptions((stage,details)=>this.report(stage,details)));
       this.socket = next;
+      next.on("upgrade",res=>this.report("upgrade",{ status:res.statusCode,tookMs:Date.now()-started }));
+      next.on("unexpected-response",(_req,res)=>{
+        res.resume();
+        if (this.socket !== next) return;
+        this.report("unexpected-response",{status:res.statusCode,tookMs:Date.now()-started});
+        this.disconnect("HTTP_UPGRADE_"+res.statusCode);
+      });
       next.on("open", () => {
         if (this.socket !== next) return;
-        this.session = randomUUID(); this.sequence = 0; this.feed = new MarketFeed();
+        this.session = randomUUID(); this.sequence = 0; this.feed = new MarketFeed(true);
         this.sessionSnapshots = 0; this.sessionUpdates = 0; this.lastQuote = 0;
-        this.ping = 0; this.pong = Date.now(); this.counts.opened++;
+        this.ping = 0; this.pong = Date.now(); this.counts.opened++; this.lastError = "";
+        this.report("open",{ tookMs:Date.now()-started });
         this.record({ open: true });
         this.sync();
       });
@@ -130,12 +164,25 @@ export class WeatherSocket {
         if (this.socket !== next || !this.feed) return;
         const frame = raw.toString();
         const now = Date.now();
-        if (frame === "PONG") { this.pong = now; return; }
+        if (frame === "PONG") { this.pong = now; this.retry = 0; return; }
         if (binary) { this.disconnect("BINARY_FRAME"); return; }
         const result = this.feed.ingest(frame, now);
         if (!this.record({ receivedAt: now, frame })) return;
         if (result.fault) {
+          this.report("resync",{ reason:result.fault });
           this.disconnect(result.fault); return;
+        }
+        if (result.invalidated?.length) {
+          const assets=[...new Set(result.invalidated.map(row=>row.asset))];
+          this.invalidated+=assets.length;
+          this.socket.send(JSON.stringify({assets_ids:assets,operation:"unsubscribe"}));
+          for(const asset of assets) {
+            this.subscribed.delete(asset);
+            this.repair.set(asset,now+750);
+          }
+          this.feed.subscribe(this.subscribed);
+          this.record({ resync:result.invalidated });
+          if (this.invalidated<=5 || this.invalidated%50===0) this.report("resync_tokens",{count:assets.length,total:this.invalidated});
         }
         if (frame.includes('"tick_size_change"') || frame.includes('"market_resolved"')) {
           const decoded = JSON.parse(frame);
@@ -152,12 +199,26 @@ export class WeatherSocket {
         this.counts.updates += result.quotes.length - result.snapshots;
         if (result.quotes.length) { this.lastQuote = now; this.retry = 0; }
       });
-      next.on("error", error => { if (this.socket === next) this.disconnect(error.message); });
-      next.on("close", code => { if (this.socket === next) this.disconnect("WebSocket " + code); });
+      next.on("error", error => {
+        if (this.socket !== next) return;
+        const failedAfter = this.transport.stage;
+        this.report("error",{ error:error.message, code:(error as NodeJS.ErrnoException).code, failedAfter,tookMs:Date.now()-started });
+        this.disconnect(error.message);
+      });
+      next.on("close", (code, reason) => {
+        if (this.socket !== next) return;
+        this.report("close",{ code,reason:reason.toString().slice(0,160) });
+        this.disconnect("WebSocket " + code);
+      });
       return;
     }
     if (socket.readyState !== WebSocket.OPEN) return;
-    if (now - this.pong > 22_000) { this.disconnect("PONG_TIMEOUT"); return; }
+    for(const [asset,after] of this.repair) if(after<=now) {
+      this.repair.delete(asset);
+      if(this.target.has(asset)) this.pendingSubscriptions.push(asset);
+    }
+    if (now >= this.subscribeAt) this.subscribe();
+    if (now - this.pong > 22_000) { this.report("heartbeat_timeout",{lastPong:this.pong}); this.disconnect("PONG_TIMEOUT"); return; }
     if (now - this.ping >= 10_000) { this.ping = now; socket.send("PING"); }
   }
 
@@ -172,8 +233,8 @@ export class WeatherSocket {
   tickSize(token: string, fallback: number) { return this.ticks.get(token) ?? fallback; }
   status() {
     return { process: true, socket: !!this.activeSession, subscribed: this.subscribed.size, ...this.counts,
-      sessionSnapshots:this.sessionSnapshots, sessionUpdates:this.sessionUpdates,
-      lastQuote: this.lastQuote || null, error: this.lastError || null, archive: this.archiveOk };
+      sessionSnapshots:this.sessionSnapshots, sessionUpdates:this.sessionUpdates, invalidated:this.invalidated,
+      transport:this.transport,lastPong:this.pong || null,lastQuote: this.lastQuote || null, error: this.lastError || null, archive: this.archiveOk };
   }
   close() { this.disconnect("PROCESS_STOPPED"); }
 }

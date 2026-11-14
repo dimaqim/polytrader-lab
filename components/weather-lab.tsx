@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowUpRight, RefreshCw } from "lucide-react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { weatherStrategies, type WeatherStrategy } from "../lib/weather/strategies";
-import type { Estimate, WalletEvent, WeatherEvent } from "../lib/weather/types";
+import type { Estimate, ExecutionSource, RestProof, WalletEvent, WeatherEvent } from "../lib/weather/types";
 import { dateTime, money, resultMoney, walletLink } from "./trade-journal";
 
 const sections = [
@@ -19,12 +19,13 @@ type Bank = { experiment: string; strategy: WeatherStrategy; cash: number; initi
 type Decision = { id: string; experiment: string | null; strategy: WeatherStrategy | "system"; city: string; at: string;
   action: string; reason: string; reference: string | null; ev: string | null; wallet: string | null };
 type Fill = { id: string; experiment: string; strategy: WeatherStrategy; city: string; outcome: string; at: string;
-  side: string; shares: string; fee: string; gross: string; pnl: string | null; evidence: { delayMs?: number;
-    fill?: { partial: boolean; price: number }; executionBook?: { session: string; book: { sourceAt: number; receivedAt: number } };
+  side: string; shares: string; fee: string; gross: string; pnl: string | null; evidence: { delayMs?: number; source?: ExecutionSource; signalBook?: {rest?:RestProof};
+    fill?: { partial: boolean; price: number }; executionBook?: { session: string; rest?:RestProof; book: { sourceAt: number; receivedAt: number } };
     candidate?: { reason: string; reference: number; wallet?: WalletEvent }; walletSell?: WalletEvent } };
-type Readiness = { ready: boolean; process: boolean; ws: { socket: boolean; subscribed: number; snapshots: number; updates: number;
-  lastQuote: number | null; error: string | null }; sources: Record<string, { ok: boolean; at: number; count?: number; error?: string }> };
-type View = { event: string; books: { condition: string; yes?: {bid:number;ask:number}; no?: {bid:number;ask:number} }[] } & Estimate;
+type Readiness = { ready: boolean; process: boolean; source?:ExecutionSource; rest?:{lastResponse:number|null;error:string|null}; ws: { socket: boolean; subscribed: number; snapshots: number; updates: number;
+  lastQuote: number | null; lastPong?:number|null; transport?:{stage:string;at:number}; error: string | null }; sources: Record<string, { ok: boolean; at: number; count?: number; error?: string }> };
+type QuoteView={bid:number;ask:number;source?:ExecutionSource};
+type View = { event: string; books: { condition: string; yes?: QuoteView; no?: QuoteView }[] } & Estimate;
 type Feed = {
   readiness: { checked_at: string; payload: Readiness } | null;
   live: { data: View[]; wallets: { name: string; address: string }[]; walletEvents: WalletEvent[] } | null;
@@ -39,7 +40,8 @@ type Scores = { accuracy: { horizon:number;n:number;paired:number;brier:number|n
   financial:{experiment:string;strategy:WeatherStrategy;n:number;interval:[number,number]|null}[] };
 
 const reasonText: Record<string,string> = {
-  RULES_UNVERIFIED: "Правила расчёта не подтверждены", STALE_BOOK: "Нет свежего стакана WebSocket",
+  RULES_UNVERIFIED: "Правила расчёта не подтверждены", STALE_BOOK: "Нет подтверждённого свежего стакана",
+  SIGNAL_ONLY:"Сигнал записан без исполнения: нужен WebSocket", REST_VERIFIED_PAPER:"Исполнено по двум снимкам REST",
   INSUFFICIENT_MODEL_CONFIDENCE: "Недостаточно данных для уверенной оценки", NO_CONSERVATIVE_EDGE: "Преимущество после расходов не подтверждено",
   MARKET_FAVORITE: "Рыночный фаворит", PUBLIC_WALLET_BUY: "Публичная покупка трейдера", PUBLIC_WALLET_SELL: "Публичная продажа трейдера",
   OBSERVED_RANGE_EXCLUDED: "Наблюдение вышло за рамки диапазона", CONSERVATIVE_DISTRIBUTION_EDGE: "Преимущество по распределению",
@@ -52,6 +54,7 @@ const reasonText: Record<string,string> = {
   RISK_REJECTED: "Лимит риска", PUBLIC_INVENTORY_UNVERIFIED: "Объём позиции трейдера не подтверждён",
   COMPLETE_SET_MONITOR_ONLY: "Найден комплект для наблюдения",
 };
+const sourceText:Record<ExecutionSource,string>={WEBSOCKET_L2:"Поток WebSocket",REST_VERIFIED_PAPER:"Проверенные снимки REST",NO_EXECUTABLE_DATA:"Нет свежего стакана"};
 const pct = (value: number | null) => value == null ? "—" : (value * 100).toFixed(1) + "%";
 const modelLabel = (value: string) => value.startsWith("ecmwf") ? "ECMWF IFS" : value.startsWith("gfs") ? "GFS" : "ICON";
 const reason = (value: string) => reasonText[value] ?? value;
@@ -80,7 +83,7 @@ function MarketCard({ event, live }: { event: WeatherEvent; live?: View }) {
           {p && <small>Диапазон {pct(p.low)} – {pct(p.high)}</small>}
           {book?.yes && <small>YES · покупка {pct(book.yes.ask)} · продажа {pct(book.yes.bid)}</small>}
           {book?.no && <small>NO · покупка {pct(book.no.ask)} · продажа {pct(book.no.bid)}</small>}
-          <small>{book?.yes || book?.no ? `Снимок в ${dateTime(live!.at)} по Киеву` : "Нет свежего L2"}</small></li>;
+          <small>{book?.yes || book?.no ? `${sourceText[book?.yes?.source ?? book?.no?.source ?? "WEBSOCKET_L2"]} · ${dateTime(live!.at)} по Киеву` : "Нет свежего L2"}</small></li>;
       })}</ul>
       <p className="weather-meta"><a href={event.source} target="_blank" rel="noreferrer">Источник расчёта</a> · <a href={`https://polymarket.com/event/${encodeURIComponent(event.slug)}`} target="_blank" rel="noreferrer">Рынок <ArrowUpRight size={12} /></a></p>
       <details className="trade-details"><summary>Оригинальные правила</summary><p className="weather-rules">{event.rules}</p></details>
@@ -148,7 +151,8 @@ export function WeatherLab({ authenticated }: { authenticated: boolean }) {
   const chart = feed?.equity.filter(row => row.experiment === run?.id && row.strategy === (strategy || "favorite"))
     .sort((a,b)=>+new Date(a.at)-+new Date(b.at)) ?? [];
   const financial = scores?.financial.find(row=>row.experiment===run?.id && row.strategy===(strategy||"favorite"));
-  const status = !online ? "Сборщик недоступен" : ready ? "Данные готовы" : "Сбор данных · входы заблокированы";
+  const source=online ? view?.source ?? (view?.ws.socket ? "WEBSOCKET_L2" : "NO_EXECUTABLE_DATA") : "NO_EXECUTABLE_DATA";
+  const status = !online ? "Сборщик недоступен" : ready ? sourceText[source] : "Сбор данных · входы заблокированы";
 
   return <section className="weather" aria-label="Weather Lab">
     <div className="weather-top"><span className={"trade-state " + (ready ? "active" : "")}>{status}</span>
@@ -170,7 +174,7 @@ export function WeatherLab({ authenticated }: { authenticated: boolean }) {
         </div>}
         {!running && <button className="action" disabled={busy||!authenticated||!ready} onClick={()=>void mutate("start",{})}>Запустить эксперимент</button>}
         {!authenticated && <p className="weather-meta muted">Откройте Mini App из Telegram для управления экспериментом.</p>}
-        {online && !ready && <p className="weather-meta muted">Старт доступен после подтверждения потока L2 и погодных источников.</p>}
+        {online && !ready && <p className="weather-meta muted">Для запуска нужны свежий стакан Polymarket и погодные данные.</p>}
       </article>
       <h2>Открытые позиции</h2>
       {feed.positions.length?feed.positions.map(p=><article className="run" key={[p.experiment,p.strategy,p.token].join("/")}>
@@ -184,6 +188,7 @@ export function WeatherLab({ authenticated }: { authenticated: boolean }) {
       {!activeMarkets.length && <Empty text="Активных рынков по этому фильтру пока нет." />}
     </div>}
     {feed && tab==="strategies" && <div className="weather-stack">
+      {source==="REST_VERIFIED_PAPER" && <p className="muted">Стратегии копирования, переоценки METAR и пересмотра прогноза записывают сигналы. Входы по ним ждут WebSocket.</p>}
       {Object.entries(weatherStrategies).map(([id,label])=>{
         const bank=banks.find(row=>row.strategy===id);
         return <article className="run" key={id}><header><div><h3>{label}</h3><p>v1 · {id==="complete"?"Мониторинг":bank?.risk_blocked?"Лимит риска":bank?"Виртуальный банк":"Ожидает старта"}</p></div>
@@ -204,6 +209,7 @@ export function WeatherLab({ authenticated }: { authenticated: boolean }) {
         const price = Number(fill.gross) / Number(fill.shares);
         const sourceWallet = fill.evidence.walletSell ?? fill.evidence.candidate?.wallet;
         const book = fill.evidence.executionBook?.book;
+        const snapshots=[fill.evidence.signalBook?.rest,fill.evidence.executionBook?.rest];
         const net = Number(fill.gross) + (fill.side === "BUY" ? 1 : -1) * Number(fill.fee);
         return <article className="run" key={row.id}><h3>{actionText[fill.side]} · {fill.city} · {fill.outcome}</h3>
           <p className="muted">{dateTime(fill.at)} по Киеву · {weatherStrategies[fill.strategy]}{fill.evidence.fill?.partial ? " · частично" : ""}</p>
@@ -212,7 +218,11 @@ export function WeatherLab({ authenticated }: { authenticated: boolean }) {
             <div><dt>Комиссия</dt><dd>{money(Number(fill.fee))}</dd></div></dl>
           <p>{Number(fill.shares).toFixed(3)} шт.{fill.pnl==null?"":` · результат ${resultMoney(Number(fill.pnl))}`}</p>
           {sourceWallet && <p>Трейдер <a href={walletLink(sourceWallet.wallet)} target="_blank" rel="noreferrer">{walletName(sourceWallet.wallet)}</a></p>}
-          {book && <details className="trade-details"><summary>Подтверждение из стакана</summary><p>Котировка получена {dateTime(book.receivedAt)} по Киеву · задержка {fill.evidence.delayMs} мс.</p></details>}
+          {book && <details className="trade-details"><summary>Подтверждение из стакана</summary>
+            <p>{sourceText[fill.evidence.source ?? "WEBSOCKET_L2"]} · задержка {fill.evidence.delayMs} мс.</p>
+            {snapshots.map((snapshot,i)=>snapshot&&<p key={snapshot.requestId}>{i===0?"До сигнала":"После задержки"} · запрос {new Date(snapshot.requestedAt).toISOString()} · получено {new Date(snapshot.receivedAt).toISOString()}</p>)}
+            {!snapshots[1] && <p>Котировка получена {dateTime(book.receivedAt)} по Киеву.</p>}
+          </details>}
         </article>;
       }):<Empty text="Подтверждённых виртуальных исполнений пока нет." />}
       <h2>Решения</h2>{group(feed.decisions).length ? group(feed.decisions).map(row=>{
@@ -257,6 +267,7 @@ export function WeatherLab({ authenticated }: { authenticated: boolean }) {
         <p className="muted">Закрытых групп {financial.n}.</p></article> : <Empty text={"Для интервала нужно 20 закрытых групп «станция и день». Сейчас "+(financial?.n??0)+"."} />}
     </div>}
     {feed && tab==="health" && <div className="weather-stack">
+      <article className="run"><h3>Источник виртуальных сделок</h3><p>{sourceText[source]} · <code>{source}</code></p></article>
       {feed.notifications && <article className="run settings"><h3>Уведомления в Telegram</h3>
         {(Object.keys(categories) as (keyof typeof categories)[]).map(key=><div key={key}>
           <label htmlFor={"weather-notify-"+key}>{categories[key]}</label>
@@ -266,7 +277,12 @@ export function WeatherLab({ authenticated }: { authenticated: boolean }) {
       </article>}
       <article className="run"><h3>Polymarket L2</h3><p>{view?.ws.socket?"WebSocket открыт":"WebSocket недоступен"}</p>
         <p className="muted">Подписки {view?.ws.subscribed??0} · полные снимки {view?.ws.snapshots??0} · изменения {view?.ws.updates??0}</p>
+        {view?.ws.lastPong && <p className="muted">Последний ответ канала {dateTime(view.ws.lastPong)}</p>}
         {view?.ws.error&&<p className="muted">{view.ws.error}</p>}</article>
+      <article className="run"><h3>Резервные стаканы REST</h3>
+        <p>{view?.rest?.lastResponse ? "Последний ответ "+dateTime(view.rest.lastResponse) : "Ожидание ответа"}</p>
+        {view?.rest?.error&&<p className="muted">{view.rest.error}</p>}
+      </article>
       {Object.entries(view?.sources??{}).map(([id,source])=><article className="run" key={id}><h3>{({catalog:"Рынки Polymarket",metar:"Aviation Weather Center",
         forecast:"ECMWF IFS, GFS, ICON",ensemble:"ECMWF Ensemble",wallets:"Публичные кошельки",engine:"Торговая оценка"})[id]??id}</h3>
         <p className="muted">{source.ok?"Данные получены":source.error} · {dateTime(source.at)}</p></article>)}
