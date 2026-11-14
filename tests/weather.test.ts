@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { dayBounds, parseBucket, parseMetar, roundedTemperature, stations, exhaustive, verifyRules } from "../lib/weather/rules.ts";
 import { estimate } from "../lib/weather/probability.ts";
 import { executable, payoffTable, takeDepth } from "../lib/weather/execution.ts";
+import { clusteredInterval, forecastScore } from "../lib/weather/scoring.ts";
 import type { Forecast, LiveBook, WeatherEvent } from "../lib/weather/types.ts";
 
 test("Weather rules use the station calendar, DST, half-up rounding and eligible routine reports", () => {
@@ -72,4 +73,13 @@ test("Weather taker execution requires fresh post-delay WS depth and handles par
 test("Complete-set arithmetic exposes a missing outcome and correlated legs", () => {
   assert.deepEqual(payoffTable(3,[{bucket:0,yes:true,shares:5},{bucket:0,yes:false,shares:5}]),[5,5,5]);
   assert.deepEqual(payoffTable(3,[{bucket:0,yes:true,shares:5},{bucket:1,yes:false,shares:5}]),[10,0,5]);
+});
+test("Weather scores use resolved events and a minimum count of independent financial groups", () => {
+  const score=forecastScore([.7,.2,.1],0);
+  assert.ok(score && Math.abs(score.brier-.14)<1e-10);
+  assert.equal(score.logLoss,-Math.log(.7));
+  assert.equal(forecastScore([.7,null,.3],0),null);
+  assert.equal(forecastScore([.8,.3],0),null);
+  assert.equal(clusteredInterval(Array(19).fill(2)),null);
+  assert.deepEqual(clusteredInterval(Array(20).fill(2)),[2,2]);
 });

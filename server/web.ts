@@ -1,4 +1,5 @@
 import { weatherDashboard } from "./weather/web.ts";
+import { weatherScores } from "./weather/scoring.ts";
 import { changeExperiment, startExperiment } from "./weather/ledger.ts";
 import { notificationDefaults, saveWeatherNotifications } from "./weather/notifications.ts";
 import { seedWallet, strategies, walletPattern } from "../lib/strategies.ts";
@@ -142,6 +143,7 @@ export async function web(req: Request, route: string[]) {
     }
     if (req.method === "GET" && action === "combos") return await combosFor(new URL(req.url));
     const user = sessionUser(req);
+    if (req.method === "GET" && action === "weather/scores") return json(await weatherScores(user));
     if (req.method === "GET" && action === "weather") return json(await weatherDashboard(user));
     if (req.method === "GET" && action === "workspace") {
       if (!process.env.DATABASE_URL) return json({ error: "database_unconfigured" }, 503);

@@ -9,6 +9,7 @@ import { archiveEvents, archiveInputs, audit, markBank, postFill, state } from "
 import { calibrations, discover, ensemble, forecasts, hash, observations, verifyWallet, walletActivity, walletNames } from "./sources.ts";
 import { WeatherSocket } from "./socket.ts";
 import { enqueueWeather, weatherReport } from "./notifications.ts";
+import { sampleForecasts } from "./scoring.ts";
 import baseline from "../../lib/weather/calibration.json" with { type: "json" };
 
 type Bank = { experiment: string; strategy: WeatherStrategy; cash: number; exposure: number; running: boolean; risk_blocked: boolean };
@@ -107,7 +108,10 @@ export class WeatherEngine {
   private report(source: string, detail: object) { console.log(JSON.stringify({ at: new Date().toISOString(), source, ...detail })); }
 
   private async catalog() {
-    const held = this.persist ? await database()`select distinct m.payload from weather.positions p join weather.markets m on m.id=p.event where p.shares>0` : [];
+    const held = this.persist ? await database()`select m.payload from weather.markets m where
+      exists(select 1 from weather.positions p where p.event=m.id and p.shares>0)
+      or (exists(select 1 from weather.probability_samples s where s.event=m.id and s.observed_at>now()-interval '7 days')
+        and exists(select 1 from jsonb_array_elements(m.payload->'contracts') c where c->>'payout' is null))` : [];
     const events = await discover(Date.now(), held.map(row => row.payload as WeatherEvent));
     if (this.persist) await archiveEvents(events);
     const cutoff = Date.now() - 3 * 86400_000;
@@ -194,6 +198,7 @@ export class WeatherEngine {
     const session = this.ws.activeSession;
     const quotes = new Map<string,{ bid: number; ask: number }>();
     const marketViews: object[] = [];
+    const scoreSamples: Parameters<typeof sampleForecasts>[0] = [];
     let skipped = 0;
     for (const event of this.data.values()) {
       const eventPositions = this.positions.filter(p => p.event === event.id);
@@ -217,6 +222,7 @@ export class WeatherEngine {
       marketViews.push({ event: event.id, at, distribution: cur.distribution, observed: cur.observed, observation: cur.observation,
         confidence: cur.confidence, forecasts: cur.forecasts, calibration: cur.calibration,
         books: event.contracts.map(c => ({ condition: c.condition, yes: quotes.get(c.yes), no: quotes.get(c.no) })) });
+      if (cur.confidence) scoreSamples.push({event:event.id,end:event.end,at,distribution:cur.distribution});
       skipped++;
       const wallet = [...this.walletTrades.values()].filter(row => event.contracts.some(c => c.condition === row.condition))
         .sort((a,b) => b.receivedAt-a.receivedAt);
@@ -234,6 +240,7 @@ export class WeatherEngine {
     }
     if (at >= this.persistAt && this.persist) {
       await state("markets", { data: marketViews, walletEvents: [...this.walletTrades.values()].slice(-100), wallets: [...this.verifiedWallets.values()] });
+      await sampleForecasts(scoreSamples);
       await this.mark(banks, session, at);
       this.persistAt = at + minute;
     }

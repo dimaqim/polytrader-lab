@@ -34,6 +34,9 @@ type Feed = {
   notifications: Record<"signals"|"fills"|"health"|"daily",boolean> | null;
 };
 const categories = { signals:"Существенные сигналы",fills:"Покупки, продажи и расчёты",health:"Сбои потока",daily:"Дневной отчёт" } as const;
+type Scores = { accuracy: { horizon:number;n:number;paired:number;brier:number|null;logLoss:number|null;
+  pairedWeatherBrier:number|null;marketBrier:number|null;bins:{bottom:number;top:number;n:number;predicted:number|null;observed:number|null}[] }[];
+  financial:{experiment:string;strategy:WeatherStrategy;n:number;interval:[number,number]|null}[] };
 
 const reasonText: Record<string,string> = {
   RULES_UNVERIFIED: "Правила расчёта не подтверждены", STALE_BOOK: "Нет свежего стакана WebSocket",
@@ -93,6 +96,8 @@ export function WeatherLab({ authenticated }: { authenticated: boolean }) {
   const [city,setCity] = useState("");
   const [strategy,setStrategy] = useState("");
   const [action,setAction] = useState("");
+  const [scores,setScores] = useState<Scores|null>(null);
+  const [scoresError,setScoresError] = useState(false);
   const refresh = useCallback(async () => {
     try {
       const response = await fetch("/api/weather", { cache:"no-store" });
@@ -106,6 +111,17 @@ export function WeatherLab({ authenticated }: { authenticated: boolean }) {
     const timer = setInterval(() => { if (!document.hidden) void refresh(); },20_000);
     return () => clearInterval(timer);
   }, [refresh, authenticated]);
+  useEffect(()=>{
+    if (tab!=="analysis") return;
+    const controller = new AbortController();
+    fetch("/api/weather/scores",{cache:"no-store",signal:controller.signal}).then(response=>{
+      if (!response.ok) throw Error();
+      return response.json();
+    }).then(data=>{setScores(data);setScoresError(false);}).catch(()=>{
+      if (!controller.signal.aborted) setScoresError(true);
+    });
+    return ()=>controller.abort();
+  },[tab,authenticated]);
   const mutate = async (path: string, value: object) => {
     setBusy(true);
     setError("");
@@ -131,6 +147,7 @@ export function WeatherLab({ authenticated }: { authenticated: boolean }) {
   const walletName = (address: string) => feed?.live?.wallets.find(w=>w.address===address)?.name ?? `${address.slice(0,6)}…${address.slice(-4)}`;
   const chart = feed?.equity.filter(row => row.experiment === run?.id && row.strategy === (strategy || "favorite"))
     .sort((a,b)=>+new Date(a.at)-+new Date(b.at)) ?? [];
+  const financial = scores?.financial.find(row=>row.experiment===run?.id && row.strategy===(strategy||"favorite"));
   const status = !online ? "Сборщик недоступен" : ready ? "Данные готовы" : "Сбор данных · входы заблокированы";
 
   return <section className="weather" aria-label="Weather Lab">
@@ -225,6 +242,19 @@ export function WeatherLab({ authenticated }: { authenticated: boolean }) {
         <dl className="run-values"><div><dt>ROI на банк</dt><dd>{pct(b.realized/b.initial)}</dd></div><div><dt>Прибыльные</dt><dd>{b.closed?pct(b.wins/b.closed):"—"}</dd></div>
           <div><dt>Комиссии</dt><dd>{money(b.fees)}</dd></div></dl><p className="muted">Событий {b.events}. {b.events<20?"Недостаточная независимая выборка.":""}</p>
       </article>)}
+      <h2>Точность прогноза</h2>
+      {scoresError ? <Empty text="Не получилось загрузить оценки прогнозов." />
+        : scores?.accuracy.some(row=>row.n>0) ? scores.accuracy.filter(row=>row.n>0).map(row=><article className="run" key={row.horizon}>
+          <h3>За {row.horizon} ч · {row.n} рассчитанных событий</h3>
+          <p>Brier {row.brier?.toFixed(3)} · Log Loss {row.logLoss?.toFixed(3)}</p>
+          {row.paired>0 && <p className="muted">На тех же {row.paired} событиях Brier модели {row.pairedWeatherBrier?.toFixed(3)} · рынка {row.marketBrier?.toFixed(3)}</p>}
+          <details className="trade-details"><summary>Калибровка</summary>
+            {row.bins.filter(bin=>bin.n>0).map(bin=><p key={bin.bottom}>{pct(bin.bottom)}–{pct(bin.top)} · прогноз {pct(bin.predicted)} · сбылось {pct(bin.observed)} · {bin.n} исходов</p>)}
+          </details>
+        </article>) : <Empty text={scores?"Оценки появятся после официального расчёта рынков с сохранённым прогнозом.":"Загружаем оценки прогнозов…"} />}
+      <h2>Неопределённость результата</h2>
+      {financial?.interval ? <article className="run"><p>95% интервал среднего PnL на станцию и день от {resultMoney(financial.interval[0])} до {resultMoney(financial.interval[1])}.</p>
+        <p className="muted">Закрытых групп {financial.n}.</p></article> : <Empty text={"Для интервала нужно 20 закрытых групп «станция и день». Сейчас "+(financial?.n??0)+"."} />}
     </div>}
     {feed && tab==="health" && <div className="weather-stack">
       {feed.notifications && <article className="run settings"><h3>Уведомления в Telegram</h3>
