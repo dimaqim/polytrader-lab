@@ -41,12 +41,80 @@ export async function archiveInputs(kind: string, rows: { station: string; recei
       r(id text,station text,at float8,payload jsonb) on conflict do nothing`;
 }
 
+// The original execution evidence is retained in weather.fills. The high-volume
+// audit table stores a compact, searchable explanation instead of duplicating
+// full forecast series and entire L2 order books on every SKIP/HOLD/signal.
+function compactAuditEvidence(value: object) {
+  const record = (item: unknown): Record<string, unknown> =>
+    item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : {};
+  const raw = record(value);
+  const candidate = record(raw.candidate);
+  const contract = record(candidate.contract);
+  const bucket = record(contract.bucket);
+  const wallet = record(candidate.wallet);
+  const walletSell = record(raw.walletSell);
+  const estimate = record(raw.estimate);
+  const quote = (input: unknown) => {
+    const outer = record(input);
+    if (!Object.keys(outer).length) return undefined;
+    const book = record(outer.book);
+    return {
+      session: outer.session ?? null,
+      book: {
+        source: book.source ?? null,
+        sourceAt: book.sourceAt ?? null,
+        receivedAt: book.receivedAt ?? null,
+        bids: Array.isArray(book.bids) ? book.bids.slice(0, 1) : [],
+        asks: Array.isArray(book.asks) ? book.asks.slice(0, 1) : [],
+      },
+    };
+  };
+  const candidateSummary = Object.keys(candidate).length ? {
+    strategy: candidate.strategy ?? null,
+    token: candidate.token ?? null,
+    yes: candidate.yes ?? null,
+    reason: candidate.reason ?? null,
+    reference: candidate.reference ?? null,
+    ev: candidate.ev ?? null,
+    probability: candidate.probability ?? null,
+    conservative: candidate.conservative ?? null,
+    contract: { bucket: { label: bucket.label ?? null } },
+    ...(wallet.wallet ? { wallet: { wallet: wallet.wallet, price: wallet.price ?? null,
+      at: wallet.at ?? null, receivedAt: wallet.receivedAt ?? null } } : {}),
+  } : undefined;
+  return {
+    compact: true,
+    at: raw.at ?? null,
+    readyAt: raw.readyAt ?? null,
+    source: raw.source ?? null,
+    fair: raw.fair ?? null,
+    afterFees: raw.afterFees ?? null,
+    basisPerShare: raw.basisPerShare ?? null,
+    priorBasis: raw.priorBasis ?? null,
+    netPerShare: raw.netPerShare ?? null,
+    entriesRevision: raw.entriesRevision ?? null,
+    fill: raw.fill ? { partial: record(raw.fill).partial ?? null } : null,
+    ...(candidateSummary ? { candidate: candidateSummary } : {}),
+    ...(walletSell.wallet ? { walletSell: { wallet: walletSell.wallet, price: walletSell.price ?? null,
+      at: walletSell.at ?? null, receivedAt: walletSell.receivedAt ?? null } } : {}),
+    ...(raw.signalBook ? { signalBook: quote(raw.signalBook) } : {}),
+    ...(raw.executionBook ? { executionBook: quote(raw.executionBook) } : {}),
+    ...(Object.keys(estimate).length ? { model: {
+      at: estimate.at ?? null,
+      confidence: estimate.confidence ?? null,
+      observed: estimate.observed ?? null,
+      forecastCount: Array.isArray(estimate.forecasts) ? estimate.forecasts.length : null,
+      outcomeCount: Array.isArray(estimate.distribution) ? estimate.distribution.length : null,
+    } } : {}),
+  };
+}
+
 export async function audit(entry: { experiment?: string; strategy: WeatherStrategy | "system"; event: string; token?: string;
   action: string; reason: string; evidence: object; key: string }) {
   const id = hash([entry.experiment, entry.strategy, entry.event, entry.token, entry.action, entry.reason, entry.key]);
   await database()`insert into weather.audit(id,experiment,strategy,event,token,at,action,reason,evidence)
     values(${id},${entry.experiment ?? null},${entry.strategy},${entry.event},${entry.token ?? null},now(),${entry.action},
-      ${entry.reason},${JSON.stringify(entry.evidence)}) on conflict do nothing`;
+      ${entry.reason},${JSON.stringify(compactAuditEvidence(entry.evidence))}) on conflict do nothing`;
   return id;
 }
 
