@@ -37,7 +37,7 @@ export type Decision = { id:string;experiment:string|null;strategy:WeatherStrate
 export type Readiness = { ready:boolean;process:boolean;source?:ExecutionSource;rest?:{lastResponse:number|null;error:string|null};
   ws:{socket:boolean;route?:"direct"|"neon";subscribed:number;snapshots:number;updates:number;lastQuote?:number|null;lastPong?:number|null;error:string|null};
   sources:Record<string,{ok:boolean;at:number;count?:number;error?:string}> };
-export type View = Estimate & {event:string;marketCoverage?:{total:number;priced:number;coherent:boolean};books:{condition:string;yes?:Quote;no?:Quote}[]};
+export type View = Estimate & {event:string;forecastAt?:number;marketCoverage?:{total:number;priced:number;coherent:boolean};books:{condition:string;yes?:Quote;no?:Quote}[]};
 export type QuoteUpdate = Pick<View,"at"|"books"|"marketCoverage"> & {prices:{condition:string;market:number|null;blended:number|null}[]};
 export type LiveQuotes = {readiness:Feed["readiness"];snapshot:{at:number;markets:Record<string,QuoteUpdate>}|null;marks:Mark[]};
 export type Feed = { readiness:{checked_at:string;payload:Readiness}|null;
@@ -48,7 +48,8 @@ export type Feed = { readiness:{checked_at:string;payload:Readiness}|null;
 export type PositionDetail={position:Position&{market:WeatherEvent};fills:Fill[];live:View|null;mark:Mark|null;
   timeline:{id:string;at:string;action:string;reason:string;evaluated_at:string|null;fair:string|null;net_bid:string|null;ready_at:string|null}[]};
 export type JournalRow={id:string;experiment:string|null;strategy:WeatherStrategy|"system";token:string|null;event:string;city:string;kind:string;
-  at:string;first_at?:string|null;repetitions?:number;reason:string;outcome:string|null;price:number|null;amount:number|null;pnl:number|null;source:ExecutionSource|null;category:string};
+  at:string;market_day:string|null;wallet_name:string|null;first_at?:string|null;repetitions?:number;reason:string;outcome:string|null;
+  price:number|null;amount:number|null;pnl:number|null;source:ExecutionSource|null;category:string};
 
 export const cityName=(city:string)=>({Seoul:"Сеул",Tokyo:"Токио",London:"Лондон",Munich:"Мюнхен","New York City":"Нью-Йорк",Dallas:"Даллас"}[city]??city);
 export const kindName=(kind:string)=>kind==="highest"?"Максимальная температура":kind==="lowest"?"Минимальная температура":"Температура";

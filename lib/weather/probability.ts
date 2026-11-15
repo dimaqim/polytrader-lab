@@ -7,6 +7,29 @@ const normal = (x: number) => {
   const tail = .3989422804 * Math.exp(-x * x / 2) * a * (.31938153 + a * (-.356563782 + a * (1.781477937 + a * (-1.821255978 + 1.330274429 * a))));
   return x >= 0 ? 1 - tail : tail;
 };
+const hour = 3600_000;
+
+function latestForecasts(station: string, forecasts: Forecast[], at: number) {
+  const members = new Map<string, Forecast>();
+  for (const snapshot of forecasts.filter(row => row.station === station && row.receivedAt <= at && at - row.receivedAt <= 10 * hour)
+    .sort((a, b) => a.receivedAt - b.receivedAt)) members.set(snapshot.model + "/" + (snapshot.member ?? ""), snapshot);
+  return [...members.values()];
+}
+
+export function coverageForecast(event: WeatherEvent, forecasts: Forecast[], observations: Observation[],
+  calibration: Calibration[], at: number): Estimate | null {
+  if (at >= event.end) return null;
+  // Match the trading model's hour boundary, and cover every forecast hour up to local midnight.
+  const first = Math.ceil(Math.max(event.start, Math.floor(at / hour) * hour) / hour) * hour;
+  const complete = latestForecasts(event.station.code, forecasts, at).filter(snapshot => {
+    if ((snapshot.runAt != null && snapshot.runAt > at) || !calibration.some(fit => fit.model === snapshot.model && fit.n >= 5)) return false;
+    const hours = new Set(snapshot.points.filter(([, temperature]) => Number.isFinite(temperature)).map(([time]) => time));
+    for (let time = first; time < event.end; time += hour) if (!hours.has(time)) return false;
+    return first < event.end;
+  });
+  const result = estimate(event, complete, observations, calibration, new Map(), at);
+  return result.confidence ? result : null;
+}
 
 function interval(bucket: Bucket, mean: number, sigma: number, observed: number | null, highest: boolean) {
   const observedBucket = observed == null ? null : roundedTemperature(observed, bucket.unit);
@@ -38,13 +61,11 @@ export function estimate(event: WeatherEvent, forecasts: Forecast[], observation
   const extreme = highest ? Math.max : Math.min;
   const observed = eligible.length && event.verified ? extreme(...eligible.map(row => row.temperature!)) : null;
   const observation = eligible.sort((a, b) => b.observedAt - a.observedAt)[0] ?? null;
-  const members = new Map<string, Forecast>();
-  for (const snapshot of forecasts.filter(r => r.station === event.station.code && r.receivedAt <= at && at - r.receivedAt <= 10 * 3600_000)
-    .sort((a, b) => a.receivedAt - b.receivedAt)) members.set(snapshot.model + "/" + (snapshot.member ?? ""), snapshot);
-  const ensembleModels = new Set([...members.values()].filter(row => row.member).map(row => row.model));
+  const members = latestForecasts(event.station.code, forecasts, at);
+  const ensembleModels = new Set(members.filter(row => row.member).map(row => row.model));
   const memberCounts = new Map<string, number>();
-  for (const member of members.values()) memberCounts.set(member.model, (memberCounts.get(member.model) ?? 0) + 1);
-  const usable = [...members.values()].flatMap(snapshot => {
+  for (const member of members) memberCounts.set(member.model, (memberCounts.get(member.model) ?? 0) + 1);
+  const usable = members.flatMap(snapshot => {
     const remaining = snapshot.points.filter(([time, temperature]) => time >= Math.max(event.start, Math.floor(at / 3600_000) * 3600_000)
       && time < event.end && Number.isFinite(temperature));
     if (!remaining.length && observed == null) return [];

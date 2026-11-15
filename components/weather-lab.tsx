@@ -2,7 +2,7 @@
 
 import { useCallback,useEffect,useState } from "react";
 import { RefreshCw } from "lucide-react";
-import { weatherStrategies,type WeatherStrategy } from "../lib/weather/strategies";
+import { weatherStrategies,weatherStrategyGroups,type WeatherStrategy } from "../lib/weather/strategies";
 import { resultMoney } from "./trade-journal";
 import { cityName,pct,reasonText,strategyStatus,type Decision,type Feed,type JournalRow,type LiveQuotes,type Mark,type Position,type PositionDetail } from "./weather/data";
 import { Dashboard,EquityChart,equitySeries,Sources,StrategyResults } from "./weather/dashboard";
@@ -81,7 +81,7 @@ export function WeatherLab({authenticated}:{authenticated:boolean}) {
       experiment:row.experiment,token:row.token,strategy:row.strategy,city:row.city,
     },["buys","sells"].includes(row.category)?row.id:undefined);
   };
-  const showJournal=(strategy="",kind="open")=>{setDetail(null);setFilters({...filters,strategy,kind,page:0});setTab("journal");};
+  const showJournal=(strategy="",kind="open",group="")=>{setDetail(null);setFilters({...defaultFilters,strategy,kind,group});setTab("journal");};
   const visibleMarkets=feed?.markets.filter(e=>(!city||e.station.city===city)&&((e.end>now&&e.contracts.some(c=>c.open))
     ||feed.positions.some(p=>p.event===e.id)))??[];
   const quoteEvents=tab==="markets"?visibleMarkets.map(e=>e.id).join(","):"";
@@ -115,18 +115,21 @@ export function WeatherLab({authenticated}:{authenticated:boolean}) {
     if(!feed)return <Empty>{error?"Данные пока недоступны.":"Загружаем данные…"}</Empty>;
     switch(tab) {
       case "overview":return <Dashboard feed={feed} run={run} banks={banks} now={now} authenticated={authenticated} busy={busy} mutate={mutate}
-        openPosition={openPosition} openFill={f=>openPosition(f,f.id)} openDecision={openDecision} openStrategy={openStrategy} journal={()=>showJournal()}/>;
+        openPosition={openPosition} openFill={f=>openPosition(f,f.id)} openDecision={openDecision} journal={()=>showJournal()}
+        groupJournal={group=>showJournal("","buys",group)}/>;
       case "markets":return <div className="weather-stack">
         <label className="weather-city">Город<select value={city} onChange={e=>setCity(e.target.value)}>
           <option value="">Все города</option>{cities.map(c=><option key={c} value={c}>{cityName(c)}</option>)}</select></label>
         {visibleMarkets.length?visibleMarkets.map(m=><MarketCard key={m.id} event={m} live={feed.live?.data.find(x=>x.event===m.id)} now={now}
           held={feed.positions.filter(p=>p.event===m.id).map(p=>p.token)}/>):<Empty>Рынков для выбранного города пока нет.</Empty>}
       </div>;
-      case "strategies":return <section className="weather-stack"><h2>Стратегии</h2><div className="run weather-rows">
-        {(Object.keys(weatherStrategies) as WeatherStrategy[]).map(id=><Row key={id} title={weatherStrategies[id]}
+      case "strategies":return <section className="weather-stack"><h2>Стратегии</h2>{weatherStrategyGroups.map(group=>
+        <section className="weather-stack" key={group.id}><h3 className="weather-section-title">{group.label}</h3>
+        <p className="muted">{group.note}</p><div className="run weather-rows">
+        {group.strategies.map(id=><Row key={id} title={weatherStrategies[id]}
           note={<>{lessons[id].plain}<br/>{strategyStatus(id,banks.find(x=>x.strategy===id),run,feed,now)}</>}
-          onClick={()=>openStrategy(id)}/>)}</div></section>;
-      case "journal":return authenticated?<Journal filters={filters} onChange={setFilters} onOpen={openJournalRow} cities={cities}/>
+          onClick={()=>openStrategy(id)}/>)}</div></section>)}</section>;
+      case "journal":return authenticated?<Journal filters={filters} onChange={setFilters} onOpen={openJournalRow} cities={cities} now={now}/>
         :<Empty>Откройте Mini App в Telegram, чтобы увидеть журнал своего эксперимента.</Empty>;
       case "wallets":return <Wallets wallets={feed.live?.wallets??[]} events={feed.live?.walletEvents??[]} markets={feed.markets}/>;
       case "analysis":return <Analysis feed={feed} run={run?.id} banks={banks} now={now} open={openStrategy}/>;
@@ -178,13 +181,15 @@ function RemoteDetail({detail,now,feedOnline,marks}:{detail:Exclude<Detail,{type
 }
 
 type Scores={accuracy:{horizon:number;n:number;paired:number;brier:number|null;logLoss:number|null;pairedWeatherBrier:number|null;marketBrier:number|null;
+  coverageV2?:{n:number;baselineBrier:number|null;brier:number|null;logLoss:number|null;baselineLogLoss:number|null};
   bins:{bottom:number;top:number;n:number;predicted:number|null;observed:number|null}[]}[];
   financial:{experiment:string;strategy:WeatherStrategy;n:number;interval:[number,number]|null}[];
+  walletPolicies?:{experiment:string;policy:string;buys:number;closed:number;negative:number;pnl:number}[];
   exits:{experiment:string;reason:string;groups:number;sells:number;pnl:number;difference:number}[]};
 function Analysis({feed,run,banks,now,open}:{feed:Feed;run?:string;banks:Feed["banks"];now:number;open:(id:WeatherStrategy)=>void}) {
   const [scores,setScores]=useState<Scores|null>(null);
   const [failed,setFailed]=useState(false);
-  const [selected,setSelected]=useState<WeatherStrategy>("favorite");
+  const [selected,setSelected]=useState<WeatherStrategy>("smart");
   useEffect(()=>{
     const c=new AbortController();
     fetch("/api/weather/scores",{cache:"no-store",signal:c.signal}).then(response=>{
@@ -194,9 +199,17 @@ function Analysis({feed,run,banks,now,open}:{feed:Feed;run?:string;banks:Feed["b
   },[]);
   const financial=scores?.financial.find(x=>x.experiment===run&&x.strategy===selected);
   const exits=scores?.exits?.filter(x=>x.experiment===run)??[];
+  const walletPolicies=scores?.walletPolicies?.filter(row=>row.experiment===run)??[];
   return <div className="weather-stack">
     <h2>Доходность стратегий</h2>
     <StrategyResults feed={feed} run={feed.runs.find(x=>x.id===run)} banks={banks} now={now} open={open}/>
+    {walletPolicies.length>0&&<section className="run"><h3>Повтор кошельков по правилам входа</h3>
+      {walletPolicies.map(row=><div className="weather-model" key={row.policy}>
+        <strong>{row.policy==="unknown"?"Ранние сделки без номера версии":row.policy}</strong>
+        <p>{row.buys} покупок · {row.closed} закрыто · зафиксировано {resultMoney(row.pnl)}</p>
+        {row.negative>0&&<small>{row.negative} покупок, у которых модель оценивала сигнал ниже цены с комиссией.</small>}
+      </div>)}
+    </section>}
     <section className="run"><h3>Капитал стратегии</h3><label>Стратегия<select value={selected} onChange={e=>setSelected(e.target.value as WeatherStrategy)}>
       {Object.entries(weatherStrategies).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label>
       <EquityChart rows={run?equitySeries(feed,run,[selected]):[]}/>
@@ -210,11 +223,16 @@ function Analysis({feed,run,banks,now,open}:{feed:Feed;run?:string;banks:Feed["b
       </div>):<p className="muted">Сравнение появится после официального расчёта рынков, где бот продал контракты досрочно.</p>}
     </section>
     <h2>Точность прогнозов</h2>
+    <section className="run"><h3>Проверка почасового покрытия</h3>
+      <p>Параллельный прогноз использует модели с записями на каждый оставшийся час суток. Сравниваем его с рабочим прогнозом на одних и тех же рынках после расчёта. Он пока не открывает позиции.</p>
+      {scores&&<p className="muted">Сравнений по горизонтам 24, 12, 6 и 1 ч · {scores.accuracy.map(row=>row.coverageV2?.n??0).join(" / ")}</p>}
+    </section>
     {failed?<Empty>Не получилось загрузить оценки прогнозов.</Empty>:scores?.accuracy.some(row=>row.n>0)
       ?scores.accuracy.filter(row=>row.n>0).map(row=><article className="run" key={row.horizon}>
         <h3>За {row.horizon} ч · {row.n} рассчитанных событий</h3>
         <p>Brier {row.brier?.toFixed(3)} · Log Loss {row.logLoss?.toFixed(3)}</p>
         {row.paired>0&&<p className="muted">Brier на одних и тех же {row.paired} событиях · прогноз {row.pairedWeatherBrier?.toFixed(3)} · рынок {row.marketBrier?.toFixed(3)}</p>}
+        {row.coverageV2&&row.coverageV2.n>0&&<p>Brier на {row.coverageV2.n} событиях · рабочий прогноз {row.coverageV2.baselineBrier?.toFixed(3)} · полное покрытие {row.coverageV2.brier?.toFixed(3)}. Меньше означает точнее.</p>}
         <details className="trade-details"><summary>Калибровка вероятностей</summary>
           {row.bins.filter(bin=>bin.n>0).map(bin=><p key={bin.bottom}>{pct(bin.bottom)}–{pct(bin.top)} · прогноз {pct(bin.predicted)} · сбылось {pct(bin.observed)} · {bin.n} исходов</p>)}</details>
       </article>):<Empty>{scores?"Точность появится после официального расчёта рынков с сохранённым прогнозом.":"Загружаем оценки прогнозов…"}</Empty>}

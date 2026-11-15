@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { database, date, log } from "../db.ts";
 import { takerFee } from "../../lib/simulator.ts";
 import { exitChecks, modelExit, replayEntry, saleModel, weatherPolicy, type ExitReason } from "../../lib/weather/policy.ts";
-import { estimate } from "../../lib/weather/probability.ts";
+import { coverageForecast, estimate } from "../../lib/weather/probability.ts";
 import { executable, payoffTable, restAfterStream, restAge, restFresh, restRecheck, takeDepth, type TradingSource } from "../../lib/weather/execution.ts";
 import { candidates, risk, weatherStrategies, type Candidate, type WeatherStrategy } from "../../lib/weather/strategies.ts";
 import type { Contract, Estimate, ExecutionSource, Forecast, LiveBook, Observation, WalletEvent, WeatherEvent } from "../../lib/weather/types.ts";
@@ -13,6 +13,7 @@ import { getRestBook, WeatherRest } from "./rest.ts";
 import { enqueueWeather, weatherReport } from "./notifications.ts";
 import { deliverNotifications } from "../telegram.ts";
 import { sampleForecasts } from "./scoring.ts";
+import { weatherPayouts } from "./resolution.ts";
 import { maintainArchive } from "./archive.ts";
 import { dirname, join } from "node:path";
 import baseline from "../../lib/weather/calibration.json" with { type: "json" };
@@ -84,8 +85,17 @@ export class WeatherEngine {
   }
 
   private async restoreInputs() {
-    const rows = await database()`select kind,payload from weather.inputs where received_at>now()-interval '30 hours'
-      and kind in ('metar','wallet') order by received_at`;
+    const sql=database();
+    const [rows,markets] = await sql.transaction([
+      sql`select kind,payload from weather.inputs where received_at>now()-interval '30 hours'
+        and kind in ('metar','wallet') order by received_at`,
+      sql`select payload from weather.markets where checked_at>now()-interval '4 days'
+        and exists(select 1 from jsonb_array_elements(payload->'contracts') c where c->>'payout' is not null)`,
+    ]);
+    for (const {payload} of markets) {
+      const event=payload as WeatherEvent;
+      this.data.set(event.id,event);
+    }
     for (const row of rows) {
       if (row.kind === "metar") {
         const observation = row.payload as Observation;
@@ -129,6 +139,13 @@ export class WeatherEngine {
         or exists(select 1 from weather.positions p where p.event=m.id and p.opened_at>now()-interval '7 days'))
         and exists(select 1 from jsonb_array_elements(m.payload->'contracts') c where c->>'payout' is null))` : [];
     const events = await discover(Date.now(), held.map(row => row.payload as WeatherEvent));
+    for (const event of events) {
+      const prior = this.data.get(event.id);
+      for (const contract of event.contracts) {
+        const old = prior?.contracts.find(c=>c.condition===contract.condition&&c.yes===contract.yes&&c.no===contract.no);
+        if (old?.payout) { contract.payout=old.payout; contract.open=false; }
+      }
+    }
     if (this.persist) await archiveEvents(events);
     const cutoff = Date.now() - 3 * 86400_000;
     for (const [id, event] of this.data) if (event.end < cutoff && !held.some(x => x.payload.id === id)) { this.data.delete(id); this.estimates.delete(id); this.latestEstimates.delete(id); }
@@ -140,6 +157,21 @@ export class WeatherEngine {
     this.ws.setMarkets(open);
     this.restTargets = open.flatMap(event=>event.contracts.filter(c=>c.open && c.fee)
       .flatMap(c=>[[c.yes,c.condition],[c.no,c.condition]] as [string,string][])).slice(0,480);
+    if (this.persist) {
+      const {confirmed,failures}=await weatherPayouts(events,Date.now());
+      const updated=events.flatMap(event=>{
+        if (!event.contracts.some(contract=>confirmed.has(contract.condition))) return [];
+        return [{...event,contracts:event.contracts.map(contract=>{
+          const payout=confirmed.get(contract.condition);
+          return payout?{...contract,payout,open:false}:contract;
+        })}];
+      });
+      if (updated.length) {
+        await archiveEvents(updated);
+        for (const event of updated) this.data.set(event.id,event);
+      }
+      if (confirmed.size||failures) this.report("resolution",{confirmed:confirmed.size,failedRequests:failures});
+    }
     this.report("catalog", { discovered: events.length, verified: events.filter(e => e.verified).length,
       cities: [...new Set(events.map(e => e.station.city))], feeSchedules: [...new Set(events.flatMap(e => e.contracts.map(c => c.fee?.rate ?? null)))] });
     return events.length;
@@ -276,7 +308,10 @@ export class WeatherEngine {
         if (yes && unified) mids.set(c.condition,(yes.bid+yes.ask)/2);
       }
       const prior = this.estimates.get(event.id);
-      const cur = estimate(event,[...this.snapshots.values()],[...this.readings.values()],calibrations(baseline,event,at),mids,at);
+      const forecasts = [...this.snapshots.values()];
+      const readings = [...this.readings.values()];
+      const calibration = calibrations(baseline,event,at);
+      const cur = estimate(event,forecasts,readings,calibration,mids,at);
       this.latestEstimates.set(event.id,cur);
       if (!prior || cur.forecasts.map(x=>x.hash).join() !== prior.forecasts.map(x=>x.hash).join() || at - prior.at > 15 * minute) {
         this.estimates.set(event.id,cur);
@@ -293,9 +328,14 @@ export class WeatherEngine {
         })),
       };
       marketQuotes[event.id]=view;
-      if (sample) marketViews.push({ event: event.id, distribution: cur.distribution, observed: cur.observed, observation: cur.observation,
-        confidence: cur.confidence, forecasts: cur.forecasts, calibration: cur.calibration, ...view });
-      if (cur.confidence) scoreSamples.push({event:event.id,end:event.end,at,distribution:cur.distribution});
+      if (sample) {
+        const coverage = coverageForecast(event,forecasts,readings,calibration,at);
+        const probabilities = new Map(coverage?.distribution.map(row=>[row.condition,row.p]));
+        const distribution = cur.distribution.map(row=>({...row,coverageV2:probabilities.get(row.condition)}));
+        marketViews.push({ event: event.id, distribution, observed: cur.observed, observation: cur.observation,
+          confidence: cur.confidence, forecasts: cur.forecasts, calibration: cur.calibration, forecastAt: at, ...view });
+        if (cur.confidence) scoreSamples.push({event:event.id,end:event.end,at,distribution});
+      }
       skipped++;
       const wallet = [...this.walletTrades.values()].filter(row => event.contracts.some(c => c.condition === row.condition))
         .sort((a,b) => b.receivedAt-a.receivedAt);

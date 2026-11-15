@@ -1,5 +1,6 @@
 import { database,date } from "../db.ts";
 import { clusteredInterval,forecastScore } from "../../lib/weather/scoring.ts";
+import { weatherStrategyGroups } from "../../lib/weather/strategies.ts";
 import type { Probability } from "../../lib/weather/types.ts";
 
 type Sample = { station: string; resolved: string; horizon: number; distribution: Probability[] };
@@ -19,7 +20,8 @@ export async function sampleForecasts(rows: {event:string; end:number; at:number
 
 export async function weatherScores(user: string | null) {
   const sql=database();
-  const [samples,results]=await sql.transaction([
+  const replay=weatherStrategyGroups.find(group=>group.id==="wallet")!.strategies.join(",");
+  const [samples,results,walletPolicies]=await sql.transaction([
     sql`select p.horizon,p.distribution, m.payload->'station'->>'code' station, w.resolved
       from weather.probability_samples p join weather.markets m on m.id=p.event
       cross join lateral (
@@ -34,6 +36,15 @@ export async function weatherScores(user: string | null) {
         on p.experiment=b.experiment and p.strategy=b.strategy
       where e.user_id=${user} group by b.experiment,b.strategy,p.city_day
       having bool_and(p.closed_at is not null)`,
+    sql`select p.experiment,coalesce(f.evidence->>'policy','unknown') policy,
+      count(*)::int buys,count(*) filter(where p.closed_at is not null)::int closed,
+      count(*) filter(where (f.evidence->'candidate'->>'ev')::float8<0)::int negative,
+      sum(p.realized)::float8 pnl
+      from weather.positions p join weather.experiments e on e.id=p.experiment
+      join lateral (select f.evidence from weather.fills f where f.experiment=p.experiment and f.strategy=p.strategy
+        and f.token=p.token and f.side='BUY' order by f.at,f.id limit 1) f on true
+      where e.user_id=${user} and p.strategy=any(string_to_array(${replay},','))
+      group by 1,2 order by min(p.opened_at)`,
   ]);
   const exits = user ? await sql`with comparisons as (
     select f.experiment,f.strategy,p.city_day,f.evidence->>'reason' reason,
@@ -50,15 +61,19 @@ export async function weatherScores(user: string | null) {
     const winner=row.distribution.findIndex(x=>x.condition===row.resolved);
     const weather=forecastScore(row.distribution.map(p=>p.p),winner);
     const market=forecastScore(row.distribution.map(p=>p.market),winner);
-    return weather ? [{...row,weather,market,winner}] : [];
+    const coverage=forecastScore(row.distribution.map(p=>p.coverageV2??null),winner);
+    return weather ? [{...row,weather,market,coverage,winner}] : [];
   });
   const accuracy=horizons.map(horizon=>{
     const a=scores.filter(x=>x.horizon===horizon);
     const paired=a.filter(x=>x.market);
+    const comparison=a.flatMap(x=>x.coverage?[{baseline:x.weather,candidate:x.coverage}]:[]);
     const avg=(data:number[])=>data.length ? data.reduce((sum,p)=>sum+p,0)/data.length : null;
     const guesses=a.flatMap(row=>row.distribution.map((p,i)=>({p:p.p,y:Number(i===row.winner)})));
     return {horizon,n:a.length,paired:paired.length,brier:avg(a.map(x=>x.weather.brier)),logLoss:avg(a.map(x=>x.weather.logLoss)),
       pairedWeatherBrier:avg(paired.map(x=>x.weather.brier)),marketBrier:avg(paired.map(x=>x.market!.brier)),
+      coverageV2:{n:comparison.length,baselineBrier:avg(comparison.map(x=>x.baseline.brier)),brier:avg(comparison.map(x=>x.candidate.brier)),
+        logLoss:avg(comparison.map(x=>x.candidate.logLoss)),baselineLogLoss:avg(comparison.map(x=>x.baseline.logLoss))},
       bins:Array.from({length:5},(_,i)=>{
         const bin=guesses.filter(x=>Math.min(4,Math.floor(x.p*5))===i);
         return {bottom:i/5,top:(i+1)/5,n:bin.length,predicted:avg(bin.map(x=>x.p)),observed:avg(bin.map(x=>x.y))};
@@ -71,6 +86,6 @@ export async function weatherScores(user: string | null) {
     group.values.push(row.pnl);
     groups.set(key,group);
   }
-  return {accuracy,exits,financial:[...groups.values()].map(group=>({experiment:group.experiment,strategy:group.strategy,n:group.values.length,
+  return {accuracy,exits,walletPolicies,financial:[...groups.values()].map(group=>({experiment:group.experiment,strategy:group.strategy,n:group.values.length,
     interval:clusteredInterval(group.values)}))};
 }

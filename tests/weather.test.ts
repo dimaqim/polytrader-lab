@@ -2,9 +2,10 @@ import { exitChecks, modelExit, replayEntry } from "../lib/weather/policy.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dayBounds, parseBucket, parseMetar, roundedTemperature, stations, exhaustive, verifyRules } from "../lib/weather/rules.ts";
-import { estimate } from "../lib/weather/probability.ts";
+import { coverageForecast, estimate } from "../lib/weather/probability.ts";
 import { executable, payoffTable, restAfterStream, restRecheck, takeDepth } from "../lib/weather/execution.ts";
 import { clusteredInterval, forecastScore } from "../lib/weather/scoring.ts";
+import { weatherPayouts } from "../server/weather/resolution.ts";
 import type { Forecast, LiveBook, WeatherEvent } from "../lib/weather/types.ts";
 
 test("Weather rules use the station calendar, DST, half-up rounding and eligible routine reports", () => {
@@ -47,6 +48,62 @@ test("Weather distribution sums to one and ignores forecast and observation vers
   assert.equal(result.confidence,false);
   assert.ok(result.distribution.every(x=>x.p>=0&&x.p<=1));
   assert.ok(Math.abs(result.distribution.reduce((sum,row)=>sum+row.p,0)-1)<1e-9);
+});
+
+test("Coverage forecast requires complete calibrated series and only uses the latest available run", () => {
+  const hour = 3600_000;
+  const [start,end] = dayBounds("2026-11-01","America/New_York");
+  const at = start;
+  const contracts = ["50°F or below","51°F or higher"].map((label,i) => ({
+    id:String(i),condition:String(i),slug:"bucket-"+i,bucket:parseBucket(label)!,yes:"yes-"+i,no:"no-"+i,
+    open:true,tick:.01,minimum:5,fee:null,payout:null,
+  }));
+  const event: WeatherEvent = {id:"test",slug:"test",title:"Fixture",station:stations.nyc,date:"2026-11-01",kind:"highest",
+    start,end,rules:"fixture",source:"",verified:true,exhaustive:true,contracts,receivedAt:at};
+  const points: Forecast["points"] = Array.from({length:(end-start)/hour},(_,i)=>[start+i*hour,10+i/12]);
+  const row = (model:string,receivedAt:number,hours=points):Forecast =>
+    ({station:event.station.code,model,receivedAt,runAt:null,hash:model+receivedAt,points:hours});
+  const calibration = ["gfs","icon","ecmwf"].map(model=>({model,bias:0,sigma:1,n:15,windows:{}}));
+  const gfs=row("gfs",at-10), icon=row("icon",at-10);
+  const beyond=row("ecmwf",at-5);
+  beyond.runAt=at+1;
+  const forecast=coverageForecast(event,[gfs,icon,beyond,row("gfs",at+1,[])],[],calibration,at);
+  assert.ok(forecast);
+  assert.deepEqual(forecast.forecasts.map(r=>r.hash),[gfs.hash,icon.hash]);
+  assert.ok(Math.abs(forecast.distribution.reduce((sum,r)=>sum+r.p,0)-1)<1e-9);
+  assert.ok(forecast.distribution.every(r=>r.market===null));
+  const truncated=row("icon",at-5,points.slice(0,-1));
+  assert.equal(coverageForecast(event,[gfs,icon,truncated],[],calibration,at),null);
+});
+
+test("Weather settlements require a final outcome and map CLOB winners to the recorded token IDs", async () => {
+  const [start,end] = dayBounds("2026-11-01","America/New_York");
+  const contracts = ["50°F or below","51°F","52°F or higher"].map((label,i) => ({
+    id:String(i),condition:"condition-"+i,slug:"bucket-"+i,bucket:parseBucket(label)!,yes:"yes-"+i,no:"no-"+i,
+    open:false,tick:.01,minimum:5,fee:null,payout:null,
+  }));
+  const event: WeatherEvent = {id:"1",slug:"test",title:"Fixture",station:stations.nyc,date:"2026-11-01",kind:"highest",
+    start,end,rules:"fixture",source:"",verified:true,exhaustive:true,contracts,receivedAt:end};
+  const paths: string[] = [];
+  const get: typeof fetch = async url => {
+    const path = new URL(String(url)).pathname;
+    paths.push(path);
+    if (path==="/v2/resolutions") return Response.json({data:[
+      {condition_id:"condition-0",status:"resolved",payouts:null},
+      {condition_id:"condition-1",status:"proposed",payouts:[1,0]},
+      {condition_id:"condition-2",status:"resolved",payouts:[.5,.5]},
+    ]});
+    return Response.json({closed:true,condition_id:"condition-0",tokens:[
+      {token_id:"no-0",winner:false,price:0},{token_id:"yes-0",winner:true,price:1},
+    ]});
+  };
+  assert.equal((await weatherPayouts([event],end-1,get)).confirmed.size,0);
+  const result = await weatherPayouts([event],end,get);
+  assert.deepEqual(paths,["/v2/resolutions","/markets/condition-0"]);
+  assert.deepEqual(result.confirmed.get("condition-0"),[1,0]);
+  assert.deepEqual(result.confirmed.get("condition-2"),[.5,.5]);
+  assert.equal(result.confirmed.has("condition-1"),false);
+  assert.equal(result.failures,0);
 });
 
 test("Weather taker execution requires fresh post-delay WS depth and handles partial bids and asks", () => {

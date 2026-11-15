@@ -1,5 +1,5 @@
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { weatherStrategies,type WeatherStrategy } from "../../lib/weather/strategies";
+import { weatherStrategies,weatherStrategyGroups,type WeatherStrategy } from "../../lib/weather/strategies";
 import { dateTime,money } from "../trade-journal";
 import { actionName,cityName,currentMark,kindName,liquidValue,marketDay,metrics,pct,price,reasonText,sourceName,strategyStatus,timeLeft,
   type Bank,type Feed,type Fill,type Position,type Run,type Decision,type Readiness } from "./data";
@@ -25,10 +25,10 @@ export function equitySeries(feed:Feed,run:string,strategies:WeatherStrategy[]) 
   return [...byTime].sort(([a],[b])=>a.localeCompare(b)).map(([at,group])=>({at,
     equity:group.size===strategies.length&&[...group.values()].every(n=>n!=null)?[...group.values()].reduce<number>((sum,n)=>sum+(n??0),0):null}));
 }
-export function Dashboard({feed,run,banks,now,authenticated,busy,mutate,openPosition,openFill,openDecision,openStrategy,journal}:{
+export function Dashboard({feed,run,banks,now,authenticated,busy,mutate,openPosition,openFill,openDecision,journal,groupJournal}:{
   feed:Feed;run?:Run;banks:Bank[];now:number;authenticated:boolean;busy:boolean;
   mutate:(path:string,value:object)=>Promise<boolean>;openPosition:(p:Position)=>void;openFill:(f:Fill)=>void;
-  openDecision:(d:Decision)=>void;openStrategy:(key:WeatherStrategy)=>void;journal:()=>void;
+  openDecision:(d:Decision)=>void;journal:()=>void;groupJournal:(group:string)=>void;
 }) {
   const [ready,online]=[feed.readiness?.payload.ready,feed.readiness!=null&&feed.readiness.payload.process&&now-+new Date(feed.readiness.checked_at)<45000];
   const active=!!run&&run.status!=="stopped"&&+new Date(run.ends_at)>now;
@@ -71,7 +71,24 @@ export function Dashboard({feed,run,banks,now,authenticated,busy,mutate,openPosi
         {subtotal==null&&assessed.length>0?<> По оценённой части <Result value={assessed.reduce((sum,x)=>sum+x.profit,0)}/>.</>:null}
         {subtotal==null?" Общий результат появится, когда подтверждён весь остаток.":""}</p>}
       {lastMark>0&&<p className="muted">Проверка продажи {dateTime(lastMark)} по Киеву.</p>}
-      <EquityChart rows={equitySeries(feed,run!.id,banks.map(b=>b.strategy))}/></section>}
+      <details className="trade-details"><summary>График общего капитала</summary>
+        <EquityChart rows={equitySeries(feed,run!.id,banks.map(b=>b.strategy))}/>
+      </details>
+    </section>}
+    {banks.length>0&&<section className="weather-stack">
+      <h3 className="weather-section-title">Откуда берутся сделки</h3>
+      {weatherStrategyGroups.map(group=>{
+        const members=banks.filter(bank=>group.strategies.includes(bank.strategy));
+        if(!members.length)return null;
+        const totals=members.reduce((sum,bank)=>({initial:sum.initial+bank.initial,cash:sum.cash+bank.cash,realized:sum.realized+bank.realized,
+          open:sum.open+bank.open,buys:sum.buys+bank.buys,sells:sum.sells+bank.sells}),{initial:0,cash:0,realized:0,open:0,buys:0,sells:0});
+        return <article className="run weather-group" key={group.id}>
+          <Row title={group.label} note={group.note} onClick={()=>groupJournal(group.id)}/>
+          <Facts items={[["Стартовый банк",money(totals.initial)],["Свободно",money(totals.cash)],
+            ["Зафиксировано",<Result value={totals.realized}/>],["Открыто",totals.open],["Покупки / продажи",totals.buys+" / "+totals.sells]]}/>
+        </article>;
+      })}
+    </section>}
     <section className="weather-stack"><h3 className="weather-section-title">Открытые позиции</h3>
       {feed.positions.length?<div className="run weather-rows">{feed.positions.slice(0,6).map(p=><Row key={p.experiment+"/"+p.strategy+"/"+p.token}
         title={cityName(p.city)+" · "+p.outcome} note={(p.market_day?marketDay(p.market_day)+" · ":"")+kindName(p.kind)+" · "+weatherStrategies[p.strategy]} value={money(p.basis)} onClick={()=>openPosition(p)}/>)}</div>
@@ -87,31 +104,29 @@ export function Dashboard({feed,run,banks,now,authenticated,busy,mutate,openPosi
       {feed.decisions.length?<div className="run weather-rows">{feed.decisions.slice(0,3).map(d=><Row key={d.id} title={cityName(d.city)+" · "+reasonText(d.reason)}
         note={dateTime(d.at)} onClick={()=>openDecision(d)}/>)}</div>:<Empty>Записей о пропусках пока нет.</Empty>}
     </section>
-    {banks.length>0&&<section className="weather-stack"><h3 className="weather-section-title">Результаты стратегий</h3>
-      <div className="run weather-rows">{[...banks].sort((a,b)=>b.realized-a.realized).slice(0,4).map(b=><Row key={b.strategy}
-        title={weatherStrategies[b.strategy]} note={strategyStatus(b.strategy,b,run,feed,now)} value={<Result value={b.realized}/>} onClick={()=>openStrategy(b.strategy)}/>)}</div>
-    </section>}
   </div>;
 }
 export function StrategyResults({feed,run,banks,now,open}:{feed:Feed;run?:Run;banks:Bank[];now:number;open:(id:WeatherStrategy)=>void}) {
   if(!banks.length)return <Empty>Сравнение появится после запуска эксперимента.</Empty>;
-  const summary=banks.map(bank=>({bank,...metrics(bank,feed,now),status:strategyStatus(bank.strategy,bank,run,feed,now)}));
+  const summary=weatherStrategyGroups.flatMap(group=>banks.filter(bank=>group.strategies.includes(bank.strategy)).map(bank=>({
+    bank,group:group.label,...metrics(bank,feed,now),status:strategyStatus(bank.strategy,bank,run,feed,now),
+  })));
   return <div className="weather-stack">
-    <p className="muted">У каждой стратегии свой банк. ROI считается от её стартового банка. Пока недостаточно независимых завершённых сделок для оценки прибыльности стратегии.</p>
+    <p className="muted">У каждой стратегии свой банк. ROI считается от стартового банка. Доверительный интервал использует отдельные группы «станция и день».</p>
     <div className="weather-comparison-table run"><table>
       <caption className="sr-only">Сравнение виртуальных банков</caption>
-      <thead><tr><th scope="col">Стратегия</th><th scope="col">Вложено</th><th scope="col">Реализовано</th>
+      <thead><tr><th scope="col">Стратегия</th><th scope="col">Старт / свободно</th><th scope="col">Вложено</th><th scope="col">Реализовано</th>
         <th scope="col">Открытый PnL</th><th scope="col">Общий PnL</th><th scope="col">ROI</th><th scope="col">Открыто / покупки / продажи</th></tr></thead>
-      <tbody>{summary.map(({bank,unrealized,total,status})=><tr key={bank.strategy}>
-        <th scope="row"><button className="text-action" onClick={()=>open(bank.strategy)}>{weatherStrategies[bank.strategy]}</button><small>{status}</small></th>
-        <td>{money(bank.locked)}</td><td><Result value={bank.realized}/></td><td><Result value={unrealized}/></td><td><Result value={total}/></td>
+      <tbody>{summary.map(({bank,group,unrealized,total,status})=><tr key={bank.strategy}>
+        <th scope="row"><button className="text-action" onClick={()=>open(bank.strategy)}>{weatherStrategies[bank.strategy]}</button><small>{group} · {status}</small></th>
+        <td>{money(bank.initial)} / {money(bank.cash)}</td><td>{money(bank.locked)}</td><td><Result value={bank.realized}/></td><td><Result value={unrealized}/></td><td><Result value={total}/></td>
         <td>{total==null?"Нет оценки":pct(total/bank.initial)}</td><td>{bank.open} / {bank.buys} / {bank.sells}</td>
       </tr>)}</tbody>
     </table></div>
-    <div className="weather-comparison">{summary.map(({bank,unrealized,total,status})=>{
+    <div className="weather-comparison">{summary.map(({bank,group,unrealized,total,status})=>{
       return <article className="run weather-comparison-row" key={bank.strategy}>
-        <Row title={weatherStrategies[bank.strategy]} note={status} onClick={()=>open(bank.strategy)}/>
-        <Facts items={[["Вложено",money(bank.locked)],["Открыто",bank.open],["Реализовано",<Result value={bank.realized}/>],
+        <Row title={weatherStrategies[bank.strategy]} note={group+" · "+status} onClick={()=>open(bank.strategy)}/>
+        <Facts items={[["Стартовый банк",money(bank.initial)],["Свободно",money(bank.cash)],["Вложено",money(bank.locked)],["Открыто",bank.open],["Реализовано",<Result value={bank.realized}/>],
           ["Нереализовано",<Result value={unrealized}/>],["Общий PnL",<Result value={total}/>],["ROI",total==null?"Нет оценки":pct(total/bank.initial)],
           ["Покупки / продажи",bank.buys+" / "+bank.sells]]}/>
       </article>;

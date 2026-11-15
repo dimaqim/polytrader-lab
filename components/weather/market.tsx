@@ -45,7 +45,8 @@ export function MarketCard({event,live,held,now}:{event:WeatherEvent;live?:View;
           {calibration&&<small>Историческая погрешность около {calibration.sigma.toFixed(1)} °C по {calibration.n} наблюдениям.</small>}
         </div>;
       })}
-      <p className="muted">Комбинированная оценка для каждого диапазона состоит из 25% оценки погоды и 75% оценки рынка. Модельные стратегии для входа проверяют свою консервативную оценку.</p>
+      <p className="muted">Прогноз объединяет погодные модели и измерения станции. Рыночная вероятность рассчитана отдельно по ценам Polymarket.</p>
+      {live?.forecastAt&&<p className="muted">Проверка прогноза · {dateTime(live.forecastAt)} по Киеву.</p>}
     </details>
     <div className="weather-outcomes"><h4>{all?"Все исходы":"Наиболее вероятные исходы"}</h4>
       {displayed.map(c=><Outcome key={c.condition} contract={c} live={live} now={now} held={held}/>)}
@@ -73,8 +74,9 @@ function Outcome({contract:c,live,now,held}:{contract:Contract;live?:View;now:nu
     <span>{pct(p?.p)}</span></summary>
     <p><strong>Прогноз погоды</strong> · {pct(p?.p)}</p>
     {p?.market!=null && live && now-live.at<=15_000
-      ? <p>Оценка по ценам рынка · {pct(p.market)} · Комбинированная · {pct(p.blended)}</p>
-      : <p className="muted">Рыночная и комбинированная оценки пока недоступны. {marketIssue}</p>}
+      ? <p><strong>По ценам Polymarket</strong> · {pct(p.market)}</p>
+      : <p className="muted">Оценка Polymarket недоступна. {marketIssue}</p>}
+    {p?.coverageV2!=null&&<p className="muted">Проверочный прогноз с полным почасовым покрытием · {pct(p.coverageV2)}</p>}
     {yesIssue&&yesIssue===noIssue ? <p className="weather-inline">{yesIssue}. Цены YES и NO пока не подтверждены.</p> :
       ([["YES",pair?.yes,yesIssue],["NO",pair?.no,noIssue]] as const).map(([side,quote,issue])=>
         <OutcomeQuote key={side} side={side} quote={quote} issue={issue}/>)}

@@ -20,6 +20,19 @@ export const weatherStrategies = {
 } as const;
 export type WeatherStrategy = keyof typeof weatherStrategies;
 export const strategyKeys = Object.keys(weatherStrategies) as WeatherStrategy[];
+export const weatherStrategyGroups: {id:string;label:string;note:string;strategies:readonly WeatherStrategy[]}[] = [
+  { id: "model", label: "Погодные модели", note: "Прогноз и замеры станции определяют сигнал.",
+    strategies: ["smart", "distribution", "tail", "late", "revision", "observation"] },
+  { id: "hybrid", label: "Модель + кошелёк", note: "Погодный сигнал требует покупки того же исхода публичным кошельком.",
+    strategies: ["smart_wallet"] },
+  { id: "wallet", label: "Повтор кошельков", note: "Покупка кошелька запускает проверку. Модель может отклонить вход.",
+    strategies: ["replay_5", "replay_15", "replay_30", "replay_60"] },
+  { id: "control", label: "Контрольные стратегии", note: "Фаворит по ценам рынка и наблюдение за полным набором исходов.",
+    strategies: ["favorite", "complete"] },
+];
+export function weatherStrategyGroup(strategy: WeatherStrategy) {
+  return weatherStrategyGroups.find(group=>group.strategies.includes(strategy));
+}
 export const risk = { bank: 100, cost: 5, exposure: 15, drawdown: 15, delay: 1000, maxAge: 2000, spread: .12, edge: .025 } as const;
 
 export type Candidate = {

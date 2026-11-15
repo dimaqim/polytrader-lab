@@ -1,5 +1,5 @@
 import { setWeatherEntries, weatherPosition, weatherDecision, weatherJournal } from "./weather/details.ts";
-import { strategyKeys, type WeatherStrategy } from "../lib/weather/strategies.ts";
+import { strategyKeys, weatherStrategyGroups, type WeatherStrategy } from "../lib/weather/strategies.ts";
 import { weatherDashboard, weatherQuotes } from "./weather/web.ts";
 import { weatherScores } from "./weather/scoring.ts";
 import { changeExperiment, startExperiment } from "./weather/ledger.ts";
@@ -151,9 +151,11 @@ export async function web(req: Request, route: string[]) {
       if (!user) return json({error:"login_required"},401);
       const query=new URL(req.url).searchParams;
       if(action==="weather/journal") {
-        const since=query.get("since");
-        if(since && (!/^\d{4}-\d{2}-\d{2}$/.test(since) || !Number.isFinite(Date.parse(since)) ||
-          new Date(since).toISOString().slice(0,10)!==since)) return json({error:"invalid_request"},400);
+        const dates=[query.get("since"),query.get("day")];
+        const dateBy=query.get("dateBy"), group=query.get("group");
+        if(dates.some(day=>day && (!/^\d{4}-\d{2}-\d{2}$/.test(day) || day.startsWith("0000") || !Number.isFinite(Date.parse(day)) ||
+          new Date(day).toISOString().slice(0,10)!==day)) || dateBy && !["execution","market"].includes(dateBy) ||
+          group && !weatherStrategyGroups.some(item=>item.id===group)) return json({error:"invalid_request"},400);
         return json(await weatherJournal(user,query));
       }
       const id=query.get("id")??"";

@@ -325,7 +325,12 @@ input:not([type=checkbox]), select {
 .weather-journal-tabs { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:4px; padding:4px; border:1px solid var(--line); border-radius:8px; background:var(--paper); }
 .weather-journal-tabs button { min-height:44px; font-size:13px; font-weight:800; padding:3px; border-radius:5px; }
 .weather-journal-tabs button[aria-pressed=true] { background:var(--quiet); color:var(--action); }
-.weather-filter select,.weather-filter input,.weather-city select { width:100%; min-width:0; border:1px solid var(--outlined); border-radius:6px; background:var(--paper); padding:6px; min-height:40px; }
+.weather-journal-controls { display:grid; gap:12px; }
+.weather-journal-controls :is(select,input) { inline-size:100%; min-width:0; }
+.weather-journal-date { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.weather-day-tabs { grid-template-columns:repeat(5,minmax(0,1fr)); border:0; padding:0; }
+.weather-day-tabs button { font-size:clamp(11px,3.3vw,13px); }
+.weather-filter :is(select,input),.weather-journal-controls :is(select,input),.weather-city select { width:100%; min-width:0; border:1px solid var(--outlined); border-radius:6px; background:var(--paper); padding:6px; min-height:44px; }
 .weather-filter .weather-selects { margin-top:8px; }
 .weather-comparison { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:stretch; gap:12px; }
 .weather-comparison-row .weather-row { padding-inline:0; min-height:68px; }

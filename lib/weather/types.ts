@@ -18,7 +18,8 @@ export type Forecast = {
   points: [number, number][]; member?: string;
 };
 export type Calibration = { model: string; bias: number; sigma: number; n: number; windows: Record<string, { n: number; bias: number | null }> };
-export type Probability = { condition: string; p: number; low: number; high: number; market: number | null; blended: number | null };
+export type Probability = { condition: string; p: number; low: number; high: number; market: number | null; blended: number | null;
+  coverageV2?: number };
 export type Estimate = {
   at: number; distribution: Probability[]; forecasts: { model: string; value: number; weight: number; receivedAt: number; hash: string }[];
   observed: number | null; observation: Observation | null; confidence: boolean; calibration: Calibration[];

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, ArrowUpRight, ChevronRight } from "lucide-react";
-import { weatherStrategies, risk, type WeatherStrategy } from "../../lib/weather/strategies";
+import { weatherStrategies, weatherStrategyGroup, risk, type WeatherStrategy } from "../../lib/weather/strategies";
 import { dateTime, money, walletLink } from "../trade-journal";
 import { exits, lessons } from "./education";
 import { actionName,cash,cityName,currentMark,kindName,liquidValue,marketDay,marketUrl,metrics,modelName,needsStream,pct,pnl,price,qty,quoteIssue,reasonText,sourceName,strategyStatus,tone,
@@ -165,8 +165,11 @@ export function PositionPanel({detail,now,fillId,feedOnline}:{detail:PositionDet
   const purchaseReason=reasonText(ev?.reason??c?.reason??"");
   const contractPayout=contract?.payout?.[contract.yes===p.token?0:1];
   const last=timeline.findLast(row=>row.action==="HOLD"||row.action==="SELL"||row.action==="SKIP");
-  const marketAtEntry=ev?.estimate?.distribution.find(x=>x.condition===contract?.condition)?.market;
-  const entryProbability=p.strategy==="favorite"?marketAtEntry:c?.probability;
+  const entryDistribution=ev?.estimate?.distribution.find(x=>x.condition===contract?.condition);
+  const marketYes=entryDistribution?.market;
+  const isNo=contract?.no===p.token;
+  const marketAtEntry=marketYes==null?null:isNo?1-marketYes:marketYes;
+  const entryProbability=c?.probability??(entryDistribution?(isNo?1-entryDistribution.p:entryDistribution.p):null);
   type Step={key:string;at:number;label:string;detail?:string;proof?:Evidence};
   const steps:Step[]=[];
   for(const fill of fills) {
@@ -180,9 +183,15 @@ export function PositionPanel({detail,now,fillId,feedOnline}:{detail:PositionDet
   return <>
     <section className="run weather-position-summary"><h3>{p.outcome} · {marketDay(p.market.date)}</h3>
       <p>{kindName(p.market.kind)} · {p.market.station.code}</p>
-      <p className="muted">{weatherStrategies[p.strategy]} · {open?"Открыта":"Закрыта"}</p>
+      <p className="muted">{weatherStrategyGroup(p.strategy)?.label} · {weatherStrategies[p.strategy]} · {open?"Открыта":"Закрыта"}</p>
       <p><strong>Почему открылась</strong> · {purchaseReason}{c?.wallet?" · "+c.wallet.name:""}</p>
       {buy&&<p>Вход {dateTime(buy.at)} по Киеву · {price(buy.gross/buy.shares)} за контракт · {money(buy.basis)} с комиссией</p>}
+      {buy&&<Facts items={[
+        ["Прогноз при сигнале",entryProbability==null?"Нет значения":pct(entryProbability)],
+        ["Нижняя оценка модели",c?.reason==="OBSERVED_RANGE_EXCLUDED"?"95% · порог правила":pct(c?.conservative)],
+        ["Polymarket при сигнале",marketAtEntry==null?"Нет оценки рынка":pct(marketAtEntry)],
+        ["Цена покупки с комиссией",price((buy.gross+buy.fee)/buy.shares)],
+      ]}/>}
       <a className="weather-link" href={marketUrl(p.market,contract?.slug)} target="_blank" rel="noreferrer">Открыть рынок на Polymarket <ArrowUpRight size={14}/></a>
       {selected?.side==="BUY"&&<div className="weather-inline"><strong>{actionName[selected.side]} · {dateTime(selected.at)}</strong><p>{price(selected.gross/selected.shares)} · {qty(selected.shares)} шт. · комиссия {money(selected.fee)}</p></div>}
     </section>
@@ -219,12 +228,12 @@ export function PositionPanel({detail,now,fillId,feedOnline}:{detail:PositionDet
       </details>
     </section>}
     <section className="run"><details className="trade-details"><summary>Данные на входе</summary>
-      <Facts items={[["Вероятность при покупке",pct(entryProbability)],["Последняя оценка модели",pct(current)],
-        ["Консервативная оценка",c?.reason==="OBSERVED_RANGE_EXCLUDED"?"95% · порог правила":pct(c?.conservative)],
+      <Facts items={[["Последняя оценка модели",pct(current)],
         ["Цена продавца в момент сигнала",price(c?.reference)],["Преимущество после расходов",price(c?.ev)],
         ["Комиссия покупки",buy?money(buy.fee):"Нет записи"]]}/>
-      {live&&<p className="muted">Оценка модели от {dateTime(live.at)} по Киеву.</p>}
+      {live&&<p className="muted">Оценка модели от {dateTime(live.forecastAt??live.at)} по Киеву.</p>}
       <ModelValues evidence={ev}/>
+      {ev?.policy&&<p className="muted">Версия правил входа · {ev.policy}</p>}
       {c?.wallet&&<p>Кошелёк в сигнале · <a className="weather-link" href={walletLink(c.wallet.wallet)} target="_blank" rel="noreferrer">{c.wallet.name}</a> · {price(c.wallet.price)} · {dateTime(c.wallet.receivedAt)}</p>}
       {ev&&<BookEvidence evidence={ev}/>}
     </details></section>

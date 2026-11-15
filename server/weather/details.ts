@@ -1,4 +1,5 @@
 import { database } from "../db.ts";
+import { weatherStrategyGroups } from "../../lib/weather/strategies.ts";
 
 export async function setWeatherEntries(user:string, experiment:string, strategy:string, paused:boolean) {
   const [row] = await database()`select weather.set_entries(${user},${experiment},${strategy},${paused}) as ok`;
@@ -42,6 +43,8 @@ export async function weatherJournal(user:string, query:URLSearchParams) {
   const kind=query.get("kind")??"signals";
   const city=query.get("city")||null, strategy=query.get("strategy")||null, source=query.get("source")||null;
   const pnl=query.get("pnl")||null, since=query.get("since")||null;
+  const day=query.get("day")||null, marketDate=query.get("dateBy")==="market";
+  const group=weatherStrategyGroups.find(item=>item.id===query.get("group"))?.strategies.join(",")??null;
   const page=Math.max(0,Math.min(1000,Math.floor(Number(query.get("page"))||0)));
   const sql=database();
   const rows=await sql`with records as (
@@ -53,16 +56,18 @@ export async function weatherJournal(user:string, query:URLSearchParams) {
       null::float8 amount,null::float8 pnl,
       coalesce(a.evidence->>'source',case a.evidence->'signalBook'->'book'->>'source'
         when 'ws' then 'WEBSOCKET_L2' when 'rest' then 'REST_VERIFIED_PAPER' end) source,
-      case when a.action='BUY' then 'signals' else 'skips' end category
+      case when a.action='BUY' then 'signals' else 'skips' end category,
+      a.evidence->'candidate'->'wallet'->>'name' wallet_name
     from weather.audit a left join weather.experiments e on e.id=a.experiment
     where ${kind} in ('signals','skips') and (e.user_id=${user} or a.experiment is null)
       and (a.action='SKIP' or (a.action='BUY' and a.evidence ? 'candidate' and not (a.evidence ? 'executionBook')))
     union all
-    select f.id,f.experiment,f.strategy,f.token,p.event,f.at,case when f.side='SELL' then coalesce(f.evidence->>'reason',f.side) else f.side end,null,1,p.outcome,(f.gross/f.shares)::float8,
+    select f.id,f.experiment,f.strategy,f.token,p.event,f.at,coalesce(f.evidence->>'reason',f.evidence->'candidate'->>'reason',f.side),null,1,p.outcome,(f.gross/f.shares)::float8,
       (f.gross+case when f.side='BUY' then f.fee else -f.fee end)::float8,f.pnl::float8,
       coalesce(f.evidence->>'source',case f.evidence->'executionBook'->'book'->>'source'
         when 'ws' then 'WEBSOCKET_L2' when 'rest' then 'REST_VERIFIED_PAPER' end),
-      case when f.side='BUY' then 'buys' else 'sells' end
+      case when f.side='BUY' then 'buys' else 'sells' end,
+      case when f.side='BUY' then f.evidence->'candidate'->'wallet'->>'name' else f.evidence->'walletSell'->>'name' end
     from weather.fills f join weather.experiments e on e.id=f.experiment
     join weather.positions p using(experiment,strategy,token)
     where ${kind} in ('buys','sells') and e.user_id=${user}
@@ -72,19 +77,24 @@ export async function weatherJournal(user:string, query:URLSearchParams) {
       (case when p.closed_at is null then p.basis else p.original_cost end)::float8,p.realized::float8,
       coalesce(b.evidence->>'source',case b.evidence->'executionBook'->'book'->>'source'
         when 'ws' then 'WEBSOCKET_L2' when 'rest' then 'REST_VERIFIED_PAPER' end),
-      case when p.closed_at is null then 'open' else 'closed' end
+      case when p.closed_at is null then 'open' else 'closed' end,
+      b.evidence->'candidate'->'wallet'->>'name'
     from weather.positions p join weather.experiments e on e.id=p.experiment
     left join lateral(select gross,shares,evidence from weather.fills f where f.experiment=p.experiment
       and f.strategy=p.strategy and f.token=p.token and f.side='BUY' limit 1) b on true
     where ${kind} in ('open','closed') and e.user_id=${user}
   )
-  select r.*,m.payload->'station'->>'city' city,m.payload->>'kind' kind
+  select r.*,m.payload->'station'->>'city' city,m.payload->>'kind' kind,m.payload->>'date' market_day
   from records r join weather.markets m on m.id=r.event
   where r.category=${kind} and (${city}::text is null or m.payload->'station'->>'city'=${city})
     and (${strategy}::text is null or r.strategy=${strategy})
+    and (${group}::text is null or r.strategy=any(string_to_array(${group},',')))
     and (${source}::text is null or r.source=${source})
     and (${pnl}::text is null or (${pnl}='profit' and r.pnl>0) or (${pnl}='loss' and r.pnl<0))
     and (${since}::text is null or r.at>=${since}::date::timestamp at time zone 'Europe/Kyiv')
+    and (${day}::text is null or case when ${marketDate}::boolean then m.payload->>'date'=${day}
+      else r.at>=${day}::date::timestamp at time zone 'Europe/Kyiv'
+       and r.at<(${day}::date+1)::timestamp at time zone 'Europe/Kyiv' end)
   order by r.at desc,r.experiment,r.strategy,r.id limit 41 offset ${page*40}`;
   return {rows:rows.slice(0,40),more:rows.length>40};
 }
