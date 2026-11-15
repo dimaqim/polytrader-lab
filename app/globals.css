@@ -330,6 +330,11 @@ input:not([type=checkbox]), select {
 .weather-journal-date { grid-template-columns:repeat(2,minmax(0,1fr)); }
 .weather-day-tabs { grid-template-columns:repeat(5,minmax(0,1fr)); border:0; padding:0; }
 .weather-day-tabs button { font-size:clamp(11px,3.3vw,13px); }
+@media(max-width:450px) {
+  .weather-day-tabs { grid-template-columns:repeat(6,minmax(0,1fr)); }
+  .weather-day-tabs button { grid-column:span 2; }
+  .weather-day-tabs button:nth-last-child(-n+2) { grid-column:span 3; }
+}
 .weather-filter :is(select,input),.weather-journal-controls :is(select,input),.weather-city select { width:100%; min-width:0; border:1px solid var(--outlined); border-radius:6px; background:var(--paper); padding:6px; min-height:44px; }
 .weather-filter .weather-selects { margin-top:8px; }
 .weather-comparison { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:stretch; gap:12px; }

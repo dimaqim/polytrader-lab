@@ -41,9 +41,9 @@ export function Journal({filters,onChange,onOpen,cities,now}:{filters:Filters;on
       </select></label>
       <div className="weather-selects weather-journal-date">
         <label>Показывать по дате<select value={dateBy} onChange={e=>change("dateBy",e.target.value)}>
-          <option value="execution">Дата записи</option><option value="market">Дата события в городе</option>
+          <option value="execution">Дата записи</option><option value="market">Дата рынка</option>
         </select></label>
-        <label>{dateBy==="market"?"Дата рынка":"Дата по Киеву"}<input type="date" value={day} onChange={e=>change("day",e.target.value)}/></label>
+        <label>{dateBy==="market"?"День в городе":"Дата по Киеву"}<input type="date" value={day} onChange={e=>change("day",e.target.value)}/></label>
       </div>
       <div className="weather-journal-tabs weather-day-tabs" role="group" aria-label="Быстрый выбор даты">
         {["Позавчера","Вчера","Сегодня","Завтра","Все дни"].map((label,index)=>{
