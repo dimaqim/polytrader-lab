@@ -50,7 +50,8 @@ export function Journal({filters,onChange,onOpen,cities}:{filters:Filters;onChan
       :<div className="run weather-rows">{state.rows.map(row=><Row key={[row.experiment,row.strategy,row.id].join("/")}
         title={cityName(row.city)+(row.outcome?" · "+row.outcome:"")}
         note={<>{kindName(row.kind)} · {row.strategy==="system"?"Проверка источников":weatherStrategies[row.strategy as WeatherStrategy]}
-          <br/>{dateTime(row.at)} · {reasonText(row.reason)}{row.source?" · "+sourceName[row.source]:""}</>}
+          <br/>{dateTime(row.at)} · {reasonText(row.reason)}{row.source?" · "+sourceName[row.source]:""}
+          {(row.repetitions??1)>1&&<> · повторов {row.repetitions}</>}</>}
         value={<>{row.amount!=null&&<strong>{money(row.amount)}</strong>} {row.price!=null&&<small>{price(row.price)}</small>}
           {row.pnl!=null&&<small className={tone(row.pnl)}>{pnl(row.pnl)}</small>}</>}
         onClick={()=>onOpen(row)}/>)}</div>}

@@ -9,6 +9,7 @@ import { comboMoney, comboStates, type ComboRecord } from "../lib/combos.ts";
 import { activeStrategies } from "../lib/market-scope.ts";
 import { createPairing, pairingHash, sessionCookie, sessionUser, telegramIdentity } from "./auth.ts";
 import { database, log } from "./db.ts";
+import { storageStatus } from "./storage.ts";
 
 const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const noStore = { "cache-control": "no-store" };
@@ -145,6 +146,7 @@ export async function web(req: Request, route: string[]) {
     }
     if (req.method === "GET" && action === "combos") return await combosFor(new URL(req.url));
     const user = sessionUser(req);
+    if (req.method==="GET" && action==="weather/storage") return user ? json(await storageStatus()) : json({error:"login_required"},401);
     if (req.method === "GET" && ["weather/position","weather/decision","weather/journal"].includes(action)) {
       if (!user) return json({error:"login_required"},401);
       const query=new URL(req.url).searchParams;

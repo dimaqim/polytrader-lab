@@ -7,11 +7,9 @@ import { distributeSignals, executeDecision, recordSignal, upsertMarket } from "
 import { deliverNotifications, telegram } from "./telegram.ts";
 import { tradingReports } from "./reporting.ts";
 import { scanCombos } from "./combos.ts";
+import { sampleStorage } from "./storage.ts";
 
 const minute = 60_000;
-// Large historical wallet backfills must be explicitly opted into. The live copy
-// scanner remains functional without writing every historical activity to Neon.
-const neonWalletHistoryArchive = process.env.NEON_WALLET_ACTIVITY_ARCHIVE === "true";
 const activityId = (a: Activity) => String(a.id ?? a.sequence_id ?? createHash("sha256").update(JSON.stringify([
   a.transaction_hash, a.type, a.condition_id, a.token_id ?? a.asset, a.side, a.timestamp, a.price, a.size, a.usdc_size,
 ])).digest("hex"));
@@ -20,33 +18,17 @@ async function protect(area: string, work: () => Promise<unknown>) {
   try { await work(); return true; }
   catch (error) { await log(area, error); return false; }
 }
-async function archive(wallet: string, rows: Activity[]) {
-  const entries = rows.filter(a => Number.isFinite(a.timestamp) && a.transaction_hash)
-    .map(a => ({ id: activityId(a), at: date(a.timestamp * 1000), payload: a }));
+async function saveLiveWalletActivity(wallet: string, rows: Activity[], observed: number) {
+  const entries = rows.filter(a => a.type==="TRADE" && (a.side==="BUY"||a.side==="SELL") && a.transaction_hash
+      && Number.isFinite(a.timestamp) && a.timestamp*1000<=observed && a.timestamp*1000>=observed-3*minute)
+    .map(a => ({ id:activityId(a), at:date(a.timestamp*1000), payload:{operational:1, side:a.side,
+      token:a.token_id??a.asset, condition:a.condition_id, price:a.price, shares:a.size, tx:a.transaction_hash} }));
   if (!entries.length) return;
   await database()`insert into lab.wallet_activity(wallet,id,event_at,payload)
     select ${wallet},x.id,x.at,x.payload from jsonb_to_recordset(${JSON.stringify(entries)}::jsonb)
-    as x(id text,at timestamptz,payload jsonb) on conflict do nothing`;
+    as x(id text,at timestamptz,payload jsonb)
+    where pg_total_relation_size('lab.wallet_activity') < 16777216 on conflict do nothing`;
 }
-async function archiveHasSpace() {
-  const [storage] = await database()`select pg_total_relation_size('lab.wallet_activity')::float8 as bytes`;
-  return storage.bytes < 750 * 1024 ** 2;
-}
-
-async function backfillHistory() {
-  if (!await archiveHasSpace()) return;
-  const sql = database();
-  const [wallet] = await sql`select address,history_cursor,history_end from lab.wallets where not history_complete
-    order by case when source='research' then 0 else 1 end,updated_at limit 1`;
-  if (!wallet) return;
-  const end = wallet.history_end ?? Math.floor(Date.now() / 1000);
-  const result = await page<Activity>("/activity", { user: wallet.address, start: "1", end: String(end),
-    limit: "500", exclude_deposits_withdrawals: "false", ...(wallet.history_cursor ? { cursor: wallet.history_cursor } : {}) });
-  await archive(wallet.address, result.data);
-  await sql`update lab.wallets set history_cursor=${result.pagination.next_cursor},history_complete=${!result.pagination.has_more},
-    history_end=${end},updated_at=now() where address=${wallet.address}`;
-}
-
 async function discoverWallets() {
   const result = await page<Leader>("/leaderboard", { category: "crypto", time_period: "week", limit: "12" });
   const rows = result.data.filter(r => walletPattern.test(r.user_id) && Number.isFinite(r.pnl) && Number.isFinite(r.volume))
@@ -57,7 +39,7 @@ async function discoverWallets() {
     on conflict(address) do update set public_pnl=excluded.public_pnl,volume_shares=excluded.volume_shares`;
 }
 
-async function scanCopy(wallet: string, saveArchive: boolean) {
+async function scanCopy(wallet: string) {
   const now = Date.now();
   const params = { user: wallet, type: "TRADE", start: String(Math.floor((now - 3 * minute) / 1000)),
     end: String(Math.floor(now / 1000)), limit: "100" };
@@ -67,7 +49,6 @@ async function scanCopy(wallet: string, saveArchive: boolean) {
   for (let i = 0; i < 3; i++) {
     const result: Page<Activity> = await page<Activity>("/activity", { ...params, ...(cursor ? { cursor } : {}) });
     const observed = Date.now();
-    if (saveArchive) await archive(wallet, result.data);
     collected.push(...result.data.map(trade => ({ trade, observed })));
     cursor = result.pagination.next_cursor;
     if (!result.pagination.has_more) { complete = true; break; }
@@ -101,6 +82,7 @@ async function scanCopy(wallet: string, saveArchive: boolean) {
       reference: a.price > 0 && a.price < 1 ? a.price : undefined, reason,
       evidence: { upstreamAt: a.timestamp * 1000, detectionDelayMs: observed - a.timestamp * 1000, side: a.side, slug: a.slug, outcome: a.outcome, complete } });
   }
+  await protect("wallet_recent",()=>saveLiveWalletActivity(wallet,collected.map(row=>row.trade),Date.now()));
 }
 
 async function settleAndMark() {
@@ -184,9 +166,8 @@ export async function runWorker(slot: number, daily = false) {
     const jobs = [
       protect("copy", async () => {
         const wallets = await sql`select distinct wallet from lab.experiments where strategy='copy' and not paused and not risk_blocked and ends_at>now() and wallet is not null limit 8`;
-        const saveArchive = neonWalletHistoryArchive && wallets.length > 0 && await archiveHasSpace();
         let failed = 0;
-        for (const { wallet } of wallets) if (!await protect("copy_wallet", () => scanCopy(wallet, saveArchive))) failed++;
+        for (const { wallet } of wallets) if (!await protect("copy_wallet", () => scanCopy(wallet))) failed++;
         if (failed) throw new Error("Some watched wallets could not be checked");
       }),
       protect("portfolio", settleAndMark),
@@ -203,7 +184,6 @@ export async function runWorker(slot: number, daily = false) {
     for (let i = 0; i < 12; i++) if (!await executeDecision(undefined, "copy")) break;
     if (Math.floor(slot / minute) % 5 === 0) {
       await protect("service_health", checkServices);
-      if (neonWalletHistoryArchive) await protect("wallet_history", backfillHistory);
     }
     await protect("experiment_notifications", experimentNotifications);
     await sql`insert into lab.heartbeats(source,at,details) values('neon',now(),${JSON.stringify({ sections: health })})
@@ -211,4 +191,5 @@ export async function runWorker(slot: number, daily = false) {
   }
   await deliverNotifications();
   await sql`update lab.job_runs set done=true where job=${job} and slot=${date(slot)}`;
+  if (!daily && Math.floor(slot/minute)%15===0) await protect("storage",()=>sampleStorage(slot));
 }

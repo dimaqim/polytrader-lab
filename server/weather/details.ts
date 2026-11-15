@@ -46,6 +46,7 @@ export async function weatherJournal(user:string, query:URLSearchParams) {
   const sql=database();
   const rows=await sql`with records as (
     select a.id,a.experiment,a.strategy,a.token,a.event,a.at,a.reason,
+      (to_jsonb(a)->>'first_at')::timestamptz first_at,coalesce((to_jsonb(a)->>'repetitions')::int,1) repetitions,
       case when a.evidence ? 'candidate' then (case when a.evidence->'candidate'->>'yes'='true' then 'YES ' else 'NO ' end)
         ||(a.evidence->'candidate'->'contract'->'bucket'->>'label') else null end as outcome,
       (a.evidence->'candidate'->>'reference')::float8 price,
@@ -57,7 +58,7 @@ export async function weatherJournal(user:string, query:URLSearchParams) {
     where ${kind} in ('signals','skips') and (e.user_id=${user} or a.experiment is null)
       and (a.action='SKIP' or (a.action='BUY' and a.evidence ? 'candidate' and not (a.evidence ? 'executionBook')))
     union all
-    select f.id,f.experiment,f.strategy,f.token,p.event,f.at,case when f.side='SELL' then coalesce(f.evidence->>'reason',f.side) else f.side end,p.outcome,(f.gross/f.shares)::float8,
+    select f.id,f.experiment,f.strategy,f.token,p.event,f.at,case when f.side='SELL' then coalesce(f.evidence->>'reason',f.side) else f.side end,null,1,p.outcome,(f.gross/f.shares)::float8,
       (f.gross+case when f.side='BUY' then f.fee else -f.fee end)::float8,f.pnl::float8,
       coalesce(f.evidence->>'source',case f.evidence->'executionBook'->'book'->>'source'
         when 'ws' then 'WEBSOCKET_L2' when 'rest' then 'REST_VERIFIED_PAPER' end),
@@ -67,7 +68,7 @@ export async function weatherJournal(user:string, query:URLSearchParams) {
     where ${kind} in ('buys','sells') and e.user_id=${user}
     union all
     select p.token,p.experiment,p.strategy,p.token,p.event,coalesce(p.closed_at,p.opened_at),
-      case when p.closed_at is null then 'OPEN' else 'CLOSED' end,p.outcome,(b.gross/b.shares)::float8,
+      case when p.closed_at is null then 'OPEN' else 'CLOSED' end,null,1,p.outcome,(b.gross/b.shares)::float8,
       (case when p.closed_at is null then p.basis else p.original_cost end)::float8,p.realized::float8,
       coalesce(b.evidence->>'source',case b.evidence->'executionBook'->'book'->>'source'
         when 'ws' then 'WEBSOCKET_L2' when 'rest' then 'REST_VERIFIED_PAPER' end),

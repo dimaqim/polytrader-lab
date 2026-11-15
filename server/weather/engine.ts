@@ -13,6 +13,8 @@ import { getRestBook, WeatherRest } from "./rest.ts";
 import { enqueueWeather, weatherReport } from "./notifications.ts";
 import { deliverNotifications } from "../telegram.ts";
 import { sampleForecasts } from "./scoring.ts";
+import { maintainArchive } from "./archive.ts";
+import { dirname, join } from "node:path";
 import baseline from "../../lib/weather/calibration.json" with { type: "json" };
 
 type Bank = { experiment: string; strategy: WeatherStrategy; cash: number; exposure: number; running: boolean; risk_blocked: boolean; entries_revision:number };
@@ -46,9 +48,11 @@ export class WeatherEngine {
   private positions: Position[] = [];
   private running = true;
   private readonly persist: boolean;
+  private readonly archiveDirectory: string;
   constructor(persist: boolean, directory: string) {
     this.persist = persist;
     this.ws = new WeatherSocket(directory);
+    this.archiveDirectory=join(dirname(directory),"archives","retention");
   }
 
   async run(deadline = Infinity) {
@@ -63,6 +67,7 @@ export class WeatherEngine {
       this.periodic("engine", 250, () => this.engine(), deadline),
       this.periodic("heartbeat", 10_000, () => this.heartbeat(), deadline),
       this.periodic("delivery", 2500, async () => this.persist ? deliverNotifications(undefined,false,true) : 0, deadline),
+      this.periodic("archive", 30*minute, async () => this.persist ? maintainArchive(this.archiveDirectory) : 0, deadline),
       this.periodic("notifications", minute, async () => {
         if (this.persist) await weatherReport(Date.now(), this.executionSource(Date.now())==="NO_EXECUTABLE_DATA");
         return 0;

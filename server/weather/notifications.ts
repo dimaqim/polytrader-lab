@@ -51,7 +51,7 @@ export async function weatherReport(now: number, stale: boolean) {
             (select cash+liquidation from weather.equity where experiment=b.experiment and strategy=b.strategy
             and at>=${through}::timestamptz-interval '24 hours' and at<${through}::timestamptz order by at limit 1) start
         ) q on true where b.experiment=${run.id} order by pnl desc,b.strategy`,
-      sql`select count(*)::int as total from weather.audit where experiment=${run.id} and action='SKIP'
+      sql`select coalesce(sum(coalesce((to_jsonb(a)->>'repetitions')::int,1)),0)::int as total from weather.audit a where experiment=${run.id} and action='SKIP'
         and at<${through}::timestamptz and at>=${through}::timestamptz-interval '24 hours'`,
     ]);
     const previousDay = new Date(+new Date(through)-86400_000).toISOString().slice(0,10);

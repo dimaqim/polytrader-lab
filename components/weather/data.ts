@@ -33,7 +33,7 @@ export type Evidence = { compact?:boolean;reason?:string;at?:number;policy?:stri
 export type Fill = { id:string;experiment:string;strategy:WeatherStrategy;token:string;event:string;city:string;kind:string;outcome:string;
   side:"BUY"|"SELL"|"SETTLE";at:string;shares:number;gross:number;fee:number;basis:number;pnl:number|null;evidence:Evidence;source?:ExecutionSource };
 export type Decision = { id:string;experiment:string|null;strategy:WeatherStrategy|"system";city:string;kind:string;event:string;
-  at:string;action:string;reason:string;reference:string|null;ev:string|null;market:WeatherEvent;evidence:Evidence };
+  at:string;first_at?:string|null;repetitions?:number;action:string;reason:string;reference:string|null;ev:string|null;market:WeatherEvent;evidence:Evidence };
 export type Readiness = { ready:boolean;process:boolean;source?:ExecutionSource;rest?:{lastResponse:number|null;error:string|null};
   ws:{socket:boolean;route?:"direct"|"neon";subscribed:number;snapshots:number;updates:number;lastQuote?:number|null;lastPong?:number|null;error:string|null};
   sources:Record<string,{ok:boolean;at:number;count?:number;error?:string}> };
@@ -48,7 +48,7 @@ export type Feed = { readiness:{checked_at:string;payload:Readiness}|null;
 export type PositionDetail={position:Position&{market:WeatherEvent};fills:Fill[];live:View|null;mark:Mark|null;
   timeline:{id:string;at:string;action:string;reason:string;evaluated_at:string|null;fair:string|null;net_bid:string|null;ready_at:string|null}[]};
 export type JournalRow={id:string;experiment:string|null;strategy:WeatherStrategy|"system";token:string|null;event:string;city:string;kind:string;
-  at:string;reason:string;outcome:string|null;price:number|null;amount:number|null;pnl:number|null;source:ExecutionSource|null;category:string};
+  at:string;first_at?:string|null;repetitions?:number;reason:string;outcome:string|null;price:number|null;amount:number|null;pnl:number|null;source:ExecutionSource|null;category:string};
 
 export const cityName=(city:string)=>({Seoul:"Сеул",Tokyo:"Токио",London:"Лондон",Munich:"Мюнхен","New York City":"Нью-Йорк",Dallas:"Даллас"}[city]??city);
 export const kindName=(kind:string)=>kind==="highest"?"Максимальная температура":kind==="lowest"?"Минимальная температура":"Температура";

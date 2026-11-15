@@ -4,6 +4,7 @@ import { dateTime,money } from "../trade-journal";
 import { actionName,cityName,currentMark,kindName,liquidValue,marketDay,metrics,pct,price,reasonText,sourceName,strategyStatus,timeLeft,
   type Bank,type Feed,type Fill,type Position,type Run,type Decision,type Readiness } from "./data";
 import { Empty,Facts,Result,Row } from "./panels";
+import { StorageStatus } from "./storage";
 
 export function EquityChart({rows}:{rows:{at:string;equity:number|null}[]}) {
   if(rows.filter(x=>x.equity!=null).length<2)return <Empty>График появится после двух подтверждённых оценок банка.</Empty>;
@@ -122,6 +123,7 @@ const healthNames:Record<string,string>={catalog:"Рынки и правила P
 export function Sources({view,feed,source,busy,mutate}:{view?:Readiness;feed:Feed;source:string;busy:boolean;mutate:(path:string,value:object)=>Promise<boolean>}) {
   const categories={signals:"Сигналы",fills:"Покупки, продажи и расчёты",health:"Сбои данных",daily:"Дневной отчёт"} as const;
   return <div className="weather-stack">
+    {feed.notifications&&<StorageStatus/>}
     <article className="run"><h3>Исполнение по Polymarket</h3>
       <p>Источник · {sourceName[source as keyof typeof sourceName]??"Ожидание данных"}</p>
       <p>WebSocket · {view?.ws.socket?(view.ws.route==="neon"?"Подключён через Neon":"Подключён напрямую"):"Ожидает подключения"} · {view?.ws.subscribed??0} контрактов</p>

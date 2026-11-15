@@ -103,6 +103,8 @@ function compactAuditEvidence(value: object) {
       at: estimate.at ?? null,
       confidence: estimate.confidence ?? null,
       observed: estimate.observed ?? null,
+      revision: Array.isArray(estimate.forecasts) ? hash(estimate.forecasts.map(item=>record(item).hash)).slice(0,16) : null,
+      leadProbability: Array.isArray(estimate.distribution) ? Math.max(0,...estimate.distribution.map(item=>Number(record(item).p)||0)) : null,
       forecastCount: Array.isArray(estimate.forecasts) ? estimate.forecasts.length : null,
       outcomeCount: Array.isArray(estimate.distribution) ? estimate.distribution.length : null,
     } } : {}),
@@ -112,9 +114,10 @@ function compactAuditEvidence(value: object) {
 export async function audit(entry: { experiment?: string; strategy: WeatherStrategy | "system"; event: string; token?: string;
   action: string; reason: string; evidence: object; key: string }) {
   const id = hash([entry.experiment, entry.strategy, entry.event, entry.token, entry.action, entry.reason, entry.key]);
-  await database()`insert into weather.audit(id,experiment,strategy,event,token,at,action,reason,evidence)
+  try { await database()`insert into weather.audit(id,experiment,strategy,event,token,at,action,reason,evidence)
     values(${id},${entry.experiment ?? null},${entry.strategy},${entry.event},${entry.token ?? null},now(),${entry.action},
-      ${entry.reason},${JSON.stringify(compactAuditEvidence(entry.evidence))}) on conflict do nothing`;
+      ${entry.reason},${JSON.stringify(compactAuditEvidence(entry.evidence))}) on conflict do nothing`; }
+  catch (error) { console.error("weather_audit",error instanceof Error ? error.name : "write failed",entry.action,entry.reason); }
   return id;
 }
 

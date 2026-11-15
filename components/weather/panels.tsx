@@ -239,6 +239,7 @@ export function DecisionPanel({row}:{row:Decision}) {
   const c=row.evidence.candidate;
   return <><section className="run"><h3>{reasonText(row.reason)}</h3>
     <p>{cityName(row.market.station.city)} · {kindName(row.market.kind)} · {dateTime(row.at)}</p>
+    {(row.repetitions??1)>1&&row.first_at&&<p>Проверок с этой причиной: {row.repetitions}. Первая {dateTime(row.first_at)}, последняя {dateTime(row.at)} по Киеву.</p>}
     {c&&<Facts items={[["Исход",(c.yes?"YES ":"NO ")+c.contract.bucket.label],["Оценка",pct(c.probability)],
       ["Ask",price(c.reference)],["Преимущество",price(c.ev)]]}/>}
     <a className="weather-link" href={marketUrl(row.market,c?.contract.slug)} target="_blank" rel="noreferrer">Открыть рынок на Polymarket <ArrowUpRight size={14}/></a>
