@@ -20,7 +20,9 @@ const batchSize = 1500;
 
 async function rows(table:Table) {
   const sql=database();
-  const condition = table==="weather.audit" ? "and (r.action='SKIP' or (r.action='HOLD' and r.reason='SETTLEMENT_HOLD'))" : "";
+  const condition = table==="weather.audit" ? `and (r.action='SKIP' or (r.action='HOLD' and r.reason='SETTLEMENT_HOLD'))
+    and not exists (select 1 from weather.positions p where p.event=r.event and p.shares>0
+      and (r.token is null or p.token=r.token))` : "";
   const key = table==="weather.inputs" ? "r.kind || ':' || r.id" : table==="lab.wallet_activity" ? "r.wallet || ':' || r.id" : "r.id::text";
   const time = table==="weather.inputs" ? "r.received_at" : table==="lab.wallet_activity" ? "r.event_at" : "r.at";
   return await sql.query(`select ${key} as id, md5(to_jsonb(r)::text) as version, to_jsonb(r)::text as json
@@ -29,9 +31,11 @@ async function rows(table:Table) {
 
 async function remove(table:Table, entries:ArchiveRow[]) {
   const key = table==="weather.inputs" ? "r.kind || ':' || r.id" : table==="lab.wallet_activity" ? "r.wallet || ':' || r.id" : "r.id::text";
+  const openPosition = table==="weather.audit" ? `and not exists (select 1 from weather.positions p
+    where p.event=r.event and p.shares>0 and (r.token is null or p.token=r.token))` : "";
   return database().query(`with removed as (
     delete from ${table} r using jsonb_to_recordset($1::jsonb) as saved(id text,version text)
-    where ${key}=saved.id and md5(to_jsonb(r)::text)=saved.version returning 1
+    where ${key}=saved.id and md5(to_jsonb(r)::text)=saved.version ${openPosition} returning 1
   ) select count(*)::int count from removed`, [JSON.stringify(entries.map(({id,version})=>({id,version})))]);
 }
 
