@@ -1,4 +1,4 @@
-import { exitChecks, modelExit, replayEntry } from "../lib/weather/policy.ts";
+import { exitChecks, modelExit, replayEntry, smartEntryRejection } from "../lib/weather/policy.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dayBounds, parseBucket, parseMetar, roundedTemperature, stations, exhaustive, verifyRules } from "../lib/weather/rules.ts";
@@ -7,6 +7,20 @@ import { executable, payoffTable, restAfterStream, restRecheck, takeDepth } from
 import { clusteredInterval, forecastScore } from "../lib/weather/scoring.ts";
 import { weatherPayouts } from "../server/weather/resolution.ts";
 import type { Forecast, LiveBook, WeatherEvent } from "../lib/weather/types.ts";
+
+test("Smart weather entry needs a station reading and keeps its edge at the execution price", () => {
+  const start=Date.parse("2026-11-16T00:00:00Z");
+  const at=start+3600_000;
+  const input={at,start,end:start+86400_000,observedAt:at-900_000,model:{fair:.82,lower:.74,upper:.9},bid:.62,ask:.66,cost:.67};
+  assert.equal(smartEntryRejection(input),null);
+  assert.equal(smartEntryRejection({...input,at:start-1,observedAt:start-2}),"SMART_WAIT_FOR_STATION");
+  assert.equal(smartEntryRejection({...input,observedAt:start-1}),"SMART_WAIT_FOR_STATION");
+  assert.equal(smartEntryRejection({...input,model:null}),"SMART_INCOMPLETE_FORECAST");
+  assert.equal(smartEntryRejection({...input,bid:.58}),"SMART_WIDE_SPREAD");
+  assert.equal(smartEntryRejection({...input,cost:.12}),"SMART_PRICE_OUT_OF_RANGE");
+  assert.equal(smartEntryRejection({...input,bid:.40,ask:.44,cost:.45}),"SMART_MARKET_DISAGREEMENT");
+  assert.equal(smartEntryRejection({...input,cost:.70}),"SMART_EDGE_TOO_SMALL");
+});
 
 test("Weather rules use the station calendar, DST, half-up rounding and eligible routine reports", () => {
   for (const [date, hours] of [["2026-03-08",23],["2026-11-01",25]] as const) {

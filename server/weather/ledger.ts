@@ -4,6 +4,7 @@ import type { WeatherEvent } from "../../lib/weather/types.ts";
 import { risk, strategyKeys, weatherStrategies, type WeatherStrategy } from "../../lib/weather/strategies.ts";
 import type { PaperFill } from "../../lib/weather/execution.ts";
 import { enqueueWeather } from "./notifications.ts";
+import { smartEntryPolicy } from "../../lib/weather/policy.ts";
 
 export async function state(key: string, payload: object) {
   await database()`insert into weather.state(key,payload) values(${key},${JSON.stringify(payload)})
@@ -122,12 +123,27 @@ export async function audit(entry: { experiment?: string; strategy: WeatherStrat
 }
 
 export async function postFill(row: { experiment: string; strategy: string; token: string; condition: string; outcome: string;
-  event: WeatherEvent; side: "BUY" | "SELL" | "SETTLE"; fill: PaperFill; evidence: object; key: string }) {
+  event: WeatherEvent; side: "BUY" | "SELL" | "SETTLE"; fill: PaperFill; evidence: Record<string,unknown> & {policy?:string}; key: string }) {
   const id = hash([row.experiment, row.strategy, row.token, row.side, row.key]);
   const sql = database();
-  const [result] = await sql`select weather.post_fill(${id},${row.experiment},${row.strategy},${row.token},${row.event.id},
-    ${row.condition},${row.event.station.code + "/" + row.event.date},${row.outcome},${row.side},${row.fill.shares},${row.fill.gross},
-    ${row.fill.fee},${JSON.stringify(row.evidence)}) as status`;
+  const cityDay = row.event.station.code + "/" + row.event.date;
+  const write = sql`weather.post_fill(${id},${row.experiment},${row.strategy},${row.token},${row.event.id},
+    ${row.condition},${cityDay},${row.outcome},${row.side},${row.fill.shares},${row.fill.gross},
+    ${row.fill.fee},${JSON.stringify(row.evidence)})`;
+  let rows;
+  if(row.side==="BUY"&&row.strategy==="smart"&&row.evidence.policy===smartEntryPolicy){
+    // Use the same lock order as post_fill. Check the city-day in a new statement after acquiring the bank lock.
+    [,,rows]=await sql.transaction([
+      sql`select id from weather.experiments where id=${row.experiment} for share`,
+      sql`select experiment from weather.banks where experiment=${row.experiment} and strategy=${row.strategy} for update`,
+      sql`select case when exists(select 1 from weather.fills where id=${id}) then 'DUPLICATE'
+        when exists(select 1 from weather.positions where experiment=${row.experiment} and strategy=${row.strategy} and city_day=${cityDay})
+          then 'SMART_STATION_ALREADY_TRADED' else ${write} end as status`,
+    ]);
+  }else{
+    rows=await sql`select ${write} as status`;
+  }
+  const [result]=rows;
   if (["PAPER_FILLED","PAPER_SELL_FILLED","SETTLED","DUPLICATE"].includes(result.status)) {
     const [verified] = await sql`select pnl::float8,(gross/shares)::float8 price,shares::float8,fee::float8,side
       from weather.fills where id=${id}`;

@@ -17,7 +17,7 @@ function latestForecasts(station: string, forecasts: Forecast[], at: number) {
 }
 
 export function coverageForecast(event: WeatherEvent, forecasts: Forecast[], observations: Observation[],
-  calibration: Calibration[], at: number): Estimate | null {
+  calibration: Calibration[], at: number, market: ReadonlyMap<string,number> = new Map()): Estimate | null {
   if (at >= event.end) return null;
   // Match the trading model's hour boundary, and cover every forecast hour up to local midnight.
   const first = Math.ceil(Math.max(event.start, Math.floor(at / hour) * hour) / hour) * hour;
@@ -27,7 +27,7 @@ export function coverageForecast(event: WeatherEvent, forecasts: Forecast[], obs
     for (let time = first; time < event.end; time += hour) if (!hours.has(time)) return false;
     return first < event.end;
   });
-  const result = estimate(event, complete, observations, calibration, new Map(), at);
+  const result = estimate(event, complete, observations, calibration, market, at);
   return result.confidence ? result : null;
 }
 

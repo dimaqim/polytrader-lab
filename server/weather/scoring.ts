@@ -21,7 +21,7 @@ export async function sampleForecasts(rows: {event:string; end:number; at:number
 export async function weatherScores(user: string | null) {
   const sql=database();
   const replay=weatherStrategyGroups.find(group=>group.id==="wallet")!.strategies.join(",");
-  const [samples,results,walletPolicies]=await sql.transaction([
+  const [samples,results,walletPolicies,smartPolicies]=await sql.transaction([
     sql`select p.horizon,p.distribution, m.payload->'station'->>'code' station, w.resolved
       from weather.probability_samples p join weather.markets m on m.id=p.event
       cross join lateral (
@@ -44,6 +44,14 @@ export async function weatherScores(user: string | null) {
       join lateral (select f.evidence from weather.fills f where f.experiment=p.experiment and f.strategy=p.strategy
         and f.token=p.token and f.side='BUY' order by f.at,f.id limit 1) f on true
       where e.user_id=${user} and p.strategy=any(string_to_array(${replay},','))
+      group by 1,2 order by min(p.opened_at)`,
+    sql`select p.experiment,coalesce(f.evidence->>'policy','unknown') policy,count(*)::int buys,
+      count(*) filter(where p.closed_at is not null)::int closed,
+      count(*) filter(where p.closed_at is not null and p.realized>0)::int wins,
+      sum(p.realized)::float8 pnl
+      from weather.positions p join weather.experiments e on e.id=p.experiment
+      join weather.fills f on f.experiment=p.experiment and f.strategy=p.strategy and f.token=p.token and f.side='BUY'
+      where e.user_id=${user} and p.strategy='smart'
       group by 1,2 order by min(p.opened_at)`,
   ]);
   const exits = user ? await sql`with comparisons as (
@@ -86,6 +94,6 @@ export async function weatherScores(user: string | null) {
     group.values.push(row.pnl);
     groups.set(key,group);
   }
-  return {accuracy,exits,walletPolicies,financial:[...groups.values()].map(group=>({experiment:group.experiment,strategy:group.strategy,n:group.values.length,
+  return {accuracy,exits,walletPolicies,smartPolicies,financial:[...groups.values()].map(group=>({experiment:group.experiment,strategy:group.strategy,n:group.values.length,
     interval:clusteredInterval(group.values)}))};
 }

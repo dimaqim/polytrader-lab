@@ -88,6 +88,13 @@ export const reasons:Record<string,string>={
   RISK_REJECTED:"Ограничение риска или состояния теста",ENTRIES_PAUSED:"Новые входы приостановлены",
   PUBLIC_INVENTORY_UNVERIFIED:"Не подтверждён остаток позиции трейдера",COMPLETE_SET_MONITOR_ONLY:"Обнаружен комплект для наблюдения",
   CORRELATED_EVENT:"Этот банк уже использует связанный рынок станции и даты",DUPLICATE_POSITION:"Позиция по этому исходу уже была",
+  SMART_WAIT_FOR_STATION:"Ждём свежий замер станции за день ставки",
+  SMART_INCOMPLETE_FORECAST:"Прогнозы не покрывают оставшиеся часы суток",
+  SMART_WIDE_SPREAD:"Цены покупки и продажи отличаются больше чем на 6¢",
+  SMART_PRICE_OUT_OF_RANGE:"Цена с комиссией вне диапазона 35–85¢",
+  SMART_MARKET_DISAGREEMENT:"Модель и цены рынка расходятся больше чем на 30 п. п.",
+  SMART_EDGE_TOO_SMALL:"После комиссии запас меньше 5¢ за контракт",
+  SMART_STATION_ALREADY_TRADED:"По этой станции и дате уже была покупка",
 };
 export const reasonText=(reason:string)=>reasons[reason]??actionName[reason]??"Причина не расшифрована";
 export function currentMark(mark:Mark|null|undefined, position:Position, now=Date.now()) {
@@ -111,7 +118,7 @@ export function strategyStatus(key:WeatherStrategy,bank:Bank|undefined,run:Run|u
   if(bank.entries_paused) return "Входы приостановлены вами";
   if(run.status==="paused") return "Эксперимент на паузе";
   if(bank.risk_blocked) return "Достигнут лимит просадки";
-  if(bank.locked>=(run.configuration?.exposure??15) || bank.cash<=0) return "Свободный лимит исчерпан";
+  if(bank.locked>=(run.configuration?.exposure??15)-.01 || bank.cash<.01) return "Лимит вложений занят";
   const connection=feed.readiness;
   const view=connection?.payload;
   if (!connection || now-+new Date(connection.checked_at)>45000 || !view?.process) return "Сборщик недоступен";

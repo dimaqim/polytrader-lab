@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { database, date, log } from "../db.ts";
 import { takerFee } from "../../lib/simulator.ts";
-import { exitChecks, modelExit, replayEntry, saleModel, weatherPolicy, type ExitReason } from "../../lib/weather/policy.ts";
+import { exitChecks, modelExit, replayEntry, saleModel, smartEntryPolicy, smartEntryRejection, weatherPolicy, type ExitReason } from "../../lib/weather/policy.ts";
 import { coverageForecast, estimate } from "../../lib/weather/probability.ts";
 import { executable, payoffTable, restAfterStream, restAge, restFresh, restRecheck, takeDepth, type TradingSource } from "../../lib/weather/execution.ts";
 import { candidates, risk, weatherStrategies, type Candidate, type WeatherStrategy } from "../../lib/weather/strategies.ts";
@@ -18,12 +18,13 @@ import { maintainArchive } from "./archive.ts";
 import { dirname, join } from "node:path";
 import baseline from "../../lib/weather/calibration.json" with { type: "json" };
 
-type Bank = { experiment: string; strategy: WeatherStrategy; cash: number; exposure: number; running: boolean; risk_blocked: boolean; entries_revision:number };
+type Bank = { experiment: string; strategy: WeatherStrategy; cash: number; exposure: number; running: boolean; risk_blocked: boolean;
+  entries_revision:number; city_days?:string[] | null };
 type Position = { experiment: string; strategy: WeatherStrategy; event: string; token: string; condition: string;
   outcome: string; shares: number; basis: number; opened_at: string; source_wallet: string | null; entry_fair: number | null };
 type SourceHealth = { ok: boolean; at: number; count?: number; error?: string };
 type Pending = { bank: Bank; event: WeatherEvent; contract: Contract; token: string; outcome: string; side: "BUY" | "SELL";
-  reference: number; reason: string; estimate: Estimate; readyAt: number; source: TradingSource; signalBook: LiveBook; evidence: object; shares?: number;
+  reference: number; reason: string; estimate: Estimate; readyAt: number; source: TradingSource; signalBook: LiveBook; evidence: Record<string,unknown> & {policy?:string}; shares?: number;
   wallet?: WalletEvent; position?: Position };
 
 const configuredAge = Number(process.env.WEATHER_BOOK_AGE_MS ?? risk.maxAge);
@@ -44,6 +45,7 @@ export class WeatherEngine {
   private readonly data = new Map<string, WeatherEvent>();
   private readonly estimates = new Map<string, Estimate>();
   private readonly latestEstimates = new Map<string, Estimate>();
+  private readonly smartEstimates = new Map<string, Estimate>();
   private readonly pending = new Map<string, Pending>();
   private readonly acted = new Set<string>();
   private positions: Position[] = [];
@@ -266,10 +268,11 @@ export class WeatherEngine {
     const sql = this.persist ? database() : null;
     const [bankRows, positionRows] = sql ? await sql.transaction([
       sql`select b.experiment,b.strategy,b.cash::float8,b.risk_blocked,b.entries_revision,
-        (e.status='running' and e.ends_at>now() and not b.entries_paused) running, coalesce(p.exposure,0)::float8 as exposure
+        (e.status='running' and e.ends_at>now() and not b.entries_paused) running, coalesce(p.exposure,0)::float8 as exposure,p.city_days
         from weather.banks b join weather.experiments e on e.id=b.experiment
-        left join lateral(select sum(basis) as exposure from weather.positions where experiment=b.experiment
-          and strategy=b.strategy and shares>0) p on true
+        left join lateral(select sum(basis) filter(where shares>0) as exposure,
+          array_agg(distinct city_day) filter(where b.strategy='smart') as city_days from weather.positions where experiment=b.experiment
+          and strategy=b.strategy and (shares>0 or b.strategy='smart')) p on true
         where (e.ends_at>now() and e.status<>'stopped') or p.exposure>0`,
       sql`select p.experiment,p.strategy,p.event,p.token,p.condition,p.outcome,p.shares::float8,p.basis::float8,p.opened_at,
         source.source_wallet,source.entry_fair from weather.positions p left join lateral (
@@ -285,9 +288,11 @@ export class WeatherEngine {
     const marketViews: object[] = [];
     const marketQuotes: Record<string, object> = {};
     const sample = at >= this.persistAt;
+    const smartRunning = banks.some(bank=>bank.strategy==="smart" && bank.running && !bank.risk_blocked);
     const opportunities = new Set<WeatherStrategy>();
     const scoreSamples: Parameters<typeof sampleForecasts>[0] = [];
     let skipped = 0;
+    this.smartEstimates.clear();
     for (const event of this.data.values()) {
       const eventPositions = this.positions.filter(p => p.event === event.id);
       if (!eventPositions.length && (event.end <= at || event.start > at + 2 * 86400_000)) continue;
@@ -312,6 +317,9 @@ export class WeatherEngine {
       const readings = [...this.readings.values()];
       const calibration = calibrations(baseline,event,at);
       const cur = estimate(event,forecasts,readings,calibration,mids,at);
+      const coverage = sample || smartRunning && event.start<=at && quotes.size
+        ? coverageForecast(event,forecasts,readings,calibration,at,mids) : null;
+      if(coverage && smartRunning) this.smartEstimates.set(event.id,coverage);
       this.latestEstimates.set(event.id,cur);
       if (!prior || cur.forecasts.map(x=>x.hash).join() !== prior.forecasts.map(x=>x.hash).join() || at - prior.at > 15 * minute) {
         this.estimates.set(event.id,cur);
@@ -329,7 +337,6 @@ export class WeatherEngine {
       };
       marketQuotes[event.id]=view;
       if (sample) {
-        const coverage = coverageForecast(event,forecasts,readings,calibration,at);
         const probabilities = new Map(coverage?.distribution.map(row=>[row.condition,row.p]));
         const distribution = cur.distribution.map(row=>({...row,coverageV2:probabilities.get(row.condition)}));
         marketViews.push({ event: event.id, distribution, observed: cur.observed, observation: cur.observation,
@@ -342,13 +349,13 @@ export class WeatherEngine {
       const options = quotes.size && event.receivedAt >= at-15*minute ? candidates(event,cur,prior,quotes,wallet,at) : [];
       const reason = !event.verified ? "RULES_UNVERIFIED" : !quotes.size ? "STALE_BOOK"
         : !cur.confidence ? "INSUFFICIENT_MODEL_CONFIDENCE" : "NO_CONSERVATIVE_EDGE";
-      for (const option of options) opportunities.add(option.strategy);
+      for (const option of options) if(option.strategy!=="smart") opportunities.add(option.strategy);
       if (!options.length && at >= this.persistAt && this.persist) await audit({ strategy:"system",event:event.id,action:"SKIP",reason,
         evidence:{ estimate:cur, session, lastQuote:this.ws.lastQuote },key:String(Math.floor(at/(5*minute))) });
       if (!this.persist) continue;
       await this.managePositions(event,eventPositions,cur,wallet,books,at);
       if (event.receivedAt >= at - 15 * minute) {
-        await this.consider(event,cur,options,banks,books,at);
+        if(await this.consider(event,cur,coverage,options,banks,books,at)) opportunities.add("smart");
         if (session) await this.monitorComplete(event,banks,session,at);
       }
     }
@@ -366,15 +373,32 @@ export class WeatherEngine {
     return skipped;
   }
 
-  private async consider(event: WeatherEvent, current: Estimate, options: Candidate[], banks: Bank[], books: Map<string,LiveBook>, at: number) {
+  private async consider(event: WeatherEvent, current: Estimate, coverage: Estimate | null,
+    options: Candidate[], banks: Bank[], books: Map<string,LiveBook>, at: number) {
+    let smartQueued=false;
     for (const bank of banks.filter(row => row.running && !row.risk_blocked && row.cash > 0 && row.exposure < risk.exposure)) {
       const choices = options.filter(row => row.strategy === bank.strategy);
-      for (const candidate of choices.slice(0, bank.strategy === "distribution" ? 3 : 1)) {
-        if (this.positions.some(position => position.experiment === bank.experiment && position.strategy === bank.strategy && position.token === candidate.token)) continue;
-        const id = [bank.experiment,bank.strategy,candidate.token,"BUY"].join("/");
+      const strict=bank.strategy==="smart";
+      const cityDay=event.station.code+"/"+event.date;
+      if(strict&&bank.city_days?.includes(cityDay)) continue;
+      if(strict&&[...this.pending.values()].some(row=>row.side==="BUY"&&row.bank.strategy==="smart"&&row.bank.experiment===bank.experiment
+        &&row.event.station.code===event.station.code&&row.event.date===event.date)) continue;
+      let refused:{candidate:Candidate;reason:string}|null=null;
+      let queued=false;
+      for (const option of choices.slice(0, strict ? choices.length : bank.strategy === "distribution" ? 3 : 1)) {
+        if (this.positions.some(position => position.experiment === bank.experiment && position.strategy === bank.strategy && position.token === option.token)) continue;
+        const id = [bank.experiment,bank.strategy,option.token,"BUY"].join("/");
         if (this.pending.has(id) || this.acted.has(id)) continue;
-        const signalBook=books.get(candidate.token);
+        const signalBook=books.get(option.token);
         if (!signalBook) continue;
+        const cost = option.reference + takerFee(1,option.reference,option.contract.fee!);
+        const model = strict ? saleModel(coverage??undefined,option.contract,option.token) : null;
+        if(strict){
+          const reason=smartEntryRejection({at,start:event.start,end:event.end,observedAt:current.observation?.observedAt,model,
+            bid:signalBook.book.bids[0]?.price,ask:signalBook.book.asks[0]?.price,cost});
+          if(reason){refused??={candidate:option,reason};continue;}
+        }
+        const candidate=model?{...option,probability:model.fair,conservative:model.lower,ev:model.lower-cost}:option;
         const tick=signalBook.rest?.tick??this.ws.tickSize(candidate.token,candidate.contract.tick);
         const minimum=signalBook.rest?.minimum??candidate.contract.minimum;
         const budget=Math.min(risk.cost,bank.cash,risk.exposure-bank.exposure);
@@ -389,14 +413,20 @@ export class WeatherEngine {
             action:"SKIP",reason:"SIGNAL_ONLY",evidence:{signalBook,candidate},key:String(Math.floor(at/(5*minute)))});
           continue;
         }
-        await this.queue(id,bank,event,candidate,current,signalBook,at);
+        await this.queue(id,bank,event,candidate,strict?coverage??current:current,signalBook,at);
+        queued=true;
+        if(strict){smartQueued=true;break;}
       }
+      if(strict&&!queued&&refused&&at>=this.persistAt) await audit({experiment:bank.experiment,strategy:bank.strategy,event:event.id,
+        token:refused.candidate.token,action:"SKIP",reason:refused.reason,evidence:{candidate:refused.candidate,policy:smartEntryPolicy},
+        key:String(Math.floor(at/(5*minute)))});
     }
+    return smartQueued;
   }
 
   private async queue(id: string, bank: Bank, event: WeatherEvent, c: Candidate, current: Estimate, signalBook: LiveBook, at: number) {
     const delay = c.strategy.startsWith("replay_") ? Number(c.strategy.split("_")[1]) * 1000 : risk.delay;
-    const evidence = { signalBook, candidate: c, estimate: current, delay, at, policy:weatherPolicy };
+    const evidence = { signalBook, candidate: c, estimate: current, delay, at, policy:c.strategy==="smart"?smartEntryPolicy:weatherPolicy };
     await audit({ experiment:bank.experiment,strategy:bank.strategy,event:event.id,token:c.token,action:"BUY",
       reason:c.reason,evidence,key:String(Math.floor(at/minute)) });
     this.pending.set(id,{ bank,event,contract:c.contract,token:c.token,outcome:(c.yes ? "YES " : "NO ") + c.contract.bucket.label,
@@ -536,7 +566,8 @@ export class WeatherEngine {
     const budget = row.side === "BUY" ? Math.min(risk.cost,row.bank.cash,risk.exposure-row.bank.exposure) : row.shares!;
     const fill = takeDepth(quote,{minimum:quote.rest?.minimum??c.minimum,tick:quote.rest?.tick??this.ws.tickSize(row.token,c.tick)},row.side,budget,target,fee);
     const candidate = (row.evidence as { candidate?: Candidate }).candidate;
-    const latest = this.latestEstimates.get(row.event.id);
+    const strict = row.side==="BUY" && row.bank.strategy==="smart";
+    const latest = (strict?this.smartEstimates:this.latestEstimates).get(row.event.id);
     const model = latest && at - latest.at <= 20_000 ? saleModel(latest,c,row.token) : null;
     const requiresModel = row.side === "BUY" && row.bank.strategy !== "favorite" && row.bank.strategy !== "observation";
     const edge = requiresModel ? model?.lower : row.side === "BUY" && row.bank.strategy === "observation" ? candidate?.conservative : null;
@@ -546,6 +577,10 @@ export class WeatherEngine {
       executionFair:model?.fair, executionUpper:model?.upper, executionLower:model?.lower, netPerShare };
     let rejection: string | null = null;
     if (!fill) rejection = "NO_LIQUIDITY_OR_MINIMUM";
+    else if (strict) rejection = smartEntryRejection({at,start:row.event.start,end:row.event.end,
+      observedAt:this.latestEstimates.get(row.event.id)?.observation?.observedAt,model,
+      bid:quote.book.bids[0]?.price,ask:quote.book.asks[0]?.price,
+      cost:(fill.gross+fill.fee)/fill.shares});
     else if (!replay && (requiresModel && edge==null || edge != null && edge - (fill.gross+fill.fee)/fill.shares < risk.edge)) rejection = "PRICE_MOVED";
     else if (replay && (!row.wallet || at-row.wallet.receivedAt>=120_000
       || !replayEntry(model?.lower??null,(fill.gross+fill.fee)/fill.shares,row.wallet.price,fill.price,risk.edge))) {
@@ -625,7 +660,7 @@ export class WeatherEngine {
     const ready = this.running && source!=="NO_EXECUTABLE_DATA"
       && [["catalog",15*minute],["metar",3*minute],["forecast",25*minute],["engine",minute]].every(([key,age])=>
         this.sources[String(key)]?.ok && at-this.sources[String(key)].at<Number(age)) && markets.some(event=>event.verified && event.contracts.some(c=>c.open));
-    const details = { ready, source, policy:weatherPolicy, process:this.running, ws, rest:{lastResponse:this.rest.lastResponse||null,error:this.rest.lastError||null}, sources:this.sources, cities:[...new Set(markets.map(e=>e.station.city))] };
+    const details = { ready, source, policy:weatherPolicy, smartEntryPolicy, process:this.running, ws, rest:{lastResponse:this.rest.lastResponse||null,error:this.rest.lastError||null}, sources:this.sources, cities:[...new Set(markets.map(e=>e.station.city))] };
     this.report("heartbeat", { ...details, observedAt: at });
     if (this.persist) await state("readiness",details);
     return markets.length;

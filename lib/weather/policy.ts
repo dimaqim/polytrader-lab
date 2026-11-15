@@ -1,6 +1,8 @@
 import type { Estimate, Contract } from "./types.ts";
 
 export const weatherPolicy = "weather-risk-v3";
+export const smartEntryPolicy = "weather-entry-v4";
+export const smartEntryLimits = { observationAge: 3600_000, minCost: .35, maxCost: .85, maxSpread: .06, edge: .05, maxGap: .30 } as const;
 
 export function saleModel(estimate: Estimate | undefined, contract: Contract, token: string) {
   const outcome = estimate?.confidence ? estimate.distribution.find(row => row.condition === contract.condition) : undefined;
@@ -39,4 +41,22 @@ export function modelExit(input: ExitInput): ExitReason | null {
 
 export function replayEntry(lower: number | null, cost: number, walletPrice: number, price: number, minEdge: number) {
   return lower != null && lower - cost > minEdge && price <= walletPrice + .04 + 1e-9;
+}
+
+export function smartEntryRejection(input: {
+  at: number; start: number; end: number; observedAt?: number;
+  model: ReturnType<typeof saleModel>; bid?: number; ask?: number; cost?: number;
+}) {
+  const {at,start,end,observedAt,model,bid,ask,cost}=input;
+  const limits=smartEntryLimits;
+  if(at<start||at>=end||observedAt==null||observedAt<start||observedAt>at||at-observedAt>limits.observationAge) {
+    return "SMART_WAIT_FOR_STATION";
+  }
+  if(!model||!Number.isFinite(model.fair)||!Number.isFinite(model.lower)) return "SMART_INCOMPLETE_FORECAST";
+  if(bid==null||ask==null||!Number.isFinite(bid)||!Number.isFinite(ask)||bid<=0||ask>=1||ask<=bid
+    ||ask-bid>limits.maxSpread+1e-9) return "SMART_WIDE_SPREAD";
+  if(cost==null||!Number.isFinite(cost)||cost<limits.minCost||cost>limits.maxCost) return "SMART_PRICE_OUT_OF_RANGE";
+  if(Math.abs(model.fair-(bid+ask)/2)>limits.maxGap+1e-9) return "SMART_MARKET_DISAGREEMENT";
+  if(model.lower-cost<limits.edge-1e-9) return "SMART_EDGE_TOO_SMALL";
+  return null;
 }

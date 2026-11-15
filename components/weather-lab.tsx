@@ -3,6 +3,7 @@
 import { useCallback,useEffect,useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { weatherStrategies,weatherStrategyGroups,type WeatherStrategy } from "../lib/weather/strategies";
+import { smartEntryPolicy } from "../lib/weather/policy";
 import { resultMoney } from "./trade-journal";
 import { cityName,marketDay,pct,reasonText,strategyStatus,type Decision,type Feed,type JournalRow,type LiveQuotes,type Mark,type Position,type PositionDetail } from "./weather/data";
 import { Dashboard,EquityChart,equitySeries,Sources,StrategyResults } from "./weather/dashboard";
@@ -207,6 +208,7 @@ type Scores={accuracy:{horizon:number;n:number;paired:number;brier:number|null;l
   bins:{bottom:number;top:number;n:number;predicted:number|null;observed:number|null}[]}[];
   financial:{experiment:string;strategy:WeatherStrategy;n:number;interval:[number,number]|null}[];
   walletPolicies?:{experiment:string;policy:string;buys:number;closed:number;negative:number;pnl:number}[];
+  smartPolicies?:{experiment:string;policy:string;buys:number;closed:number;wins:number;pnl:number}[];
   exits:{experiment:string;reason:string;groups:number;sells:number;pnl:number;difference:number}[]};
 function Analysis({feed,run,banks,now,open}:{feed:Feed;run?:string;banks:Feed["banks"];now:number;open:(id:WeatherStrategy)=>void}) {
   const [scores,setScores]=useState<Scores|null>(null);
@@ -222,8 +224,18 @@ function Analysis({feed,run,banks,now,open}:{feed:Feed;run?:string;banks:Feed["b
   const financial=scores?.financial.find(x=>x.experiment===run&&x.strategy===selected);
   const exits=scores?.exits?.filter(x=>x.experiment===run)??[];
   const walletPolicies=scores?.walletPolicies?.filter(row=>row.experiment===run)??[];
+  const smartPolicies=scores?.smartPolicies?.filter(row=>row.experiment===run)??[];
+  const currentPolicy=smartPolicies.find(row=>row.policy===smartEntryPolicy);
+  const previousPolicies=smartPolicies.filter(row=>row.policy!==smartEntryPolicy);
   return <div className="weather-stack">
     <h2>Доходность стратегий</h2>
+    {run&&scores?.smartPolicies&&<section className="run"><h3>Вход по выгодной цене</h3>
+      <p><strong>Новые правила</strong> · {currentPolicy
+        ?`${currentPolicy.buys} покупок · закрыто ${currentPolicy.closed} · прибыльных ${currentPolicy.wins} · итог ${resultMoney(currentPolicy.pnl)}`
+        :"Пока нет исполненных покупок."}</p>
+      {previousPolicies.length>0&&<p className="muted">Прежние правила · {previousPolicies.reduce((sum,row)=>sum+row.buys,0)} покупок
+        · зафиксировано {resultMoney(previousPolicies.reduce((sum,row)=>sum+row.pnl,0))}</p>}
+    </section>}
     <StrategyResults feed={feed} run={feed.runs.find(x=>x.id===run)} banks={banks} now={now} open={open}/>
     {walletPolicies.length>0&&<section className="run"><h3>Повтор кошельков по правилам входа</h3>
       {walletPolicies.map(row=><div className="weather-model" key={row.policy}>
@@ -246,7 +258,7 @@ function Analysis({feed,run,banks,now,open}:{feed:Feed;run?:string;banks:Feed["b
     </section>
     <h2>Точность прогнозов</h2>
     <section className="run"><h3>Проверка почасового покрытия</h3>
-      <p>Параллельный прогноз использует модели с записями на каждый оставшийся час суток. Сравниваем его с рабочим прогнозом на одних и тех же рынках после расчёта. Он пока не открывает позиции.</p>
+      <p>Для «Входа по выгодной цене» бот проверяет, есть ли прогноз на каждый оставшийся час местных суток. Здесь можно сравнить прогнозы с этой проверкой и без неё на одних и тех же рассчитанных рынках.</p>
       {scores&&<p className="muted">Сравнений по горизонтам 24, 12, 6 и 1 ч · {scores.accuracy.map(row=>row.coverageV2?.n??0).join(" / ")}</p>}
     </section>
     {failed?<Empty>Не получилось загрузить оценки прогнозов.</Empty>:scores?.accuracy.some(row=>row.n>0)

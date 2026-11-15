@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, ArrowUpRight, ChevronRight } from "lucide-react";
 import { weatherStrategies, weatherStrategyGroup, risk, type WeatherStrategy } from "../../lib/weather/strategies";
+import { smartEntryLimits, smartEntryPolicy } from "../../lib/weather/policy";
 import { dateTime, money, walletLink } from "../trade-journal";
 import { exits, lessons } from "./education";
 import { actionName,cash,cityName,currentMark,kindName,liquidValue,marketDay,marketUrl,metrics,modelName,needsStream,outcomeName,pct,pnl,price,qty,quoteIssue,reasonText,sourceName,strategyStatus,tone,
@@ -48,10 +49,10 @@ export function StrategyPanel({strategy,bank,run,feed,now,busy,onToggle,showJour
   const wallet=strategy.includes("wallet")||strategy.startsWith("replay_");
   const parameters:[string,ReactNode][]=[
     ["Задержка",strategy.startsWith("replay_")?strategy.split("_")[1]+" с":strategy==="complete"?"Наблюдение":(cfg?.delay??risk.delay)/1000+" с"],
-    ["Максимальный спред",strategy==="complete"?"По стоимости комплекта":price(cfg?.spread??risk.spread)],
+    ["Максимальный спред",strategy==="smart"?price(smartEntryLimits.maxSpread):strategy==="complete"?"По стоимости комплекта":price(cfg?.spread??risk.spread)],
     ["Лимит на позицию",strategy==="complete"?"Нет покупок":money(cfg?.cost??risk.cost)],
     ["Лимит вложений",strategy==="complete"?"Нет покупок":money(cfg?.exposure??risk.exposure)],
-    ["Минимальное преимущество",strategy==="tail"?"Сигнал >4,5¢":strategy==="observation"?"Полная цена NO <95¢":strategy==="complete"?"Выплата выше цены":strategy==="favorite"||strategy.startsWith("replay_")?"Свой критерий":">"+price(cfg?.edge??risk.edge)],
+    ["Минимальное преимущество",strategy==="smart"?price(smartEntryLimits.edge):strategy==="tail"?"Сигнал >4,5¢":strategy==="observation"?"Полная цена NO <95¢":strategy==="complete"?"Выплата выше цены":strategy==="favorite"||strategy.startsWith("replay_")?"Свой критерий":">"+price(cfg?.edge??risk.edge)],
     ["Источник",strategy==="complete"||needsStream(strategy)?"WebSocket":"WebSocket или REST"],
     ["Данные кошельков",wallet?"Использует":"Не использует"],
     ["Погодные модели",["favorite","complete","observation"].includes(strategy)||strategy.startsWith("replay_")?"Не обязательны для входа":"ECMWF IFS, GFS, ICON и ансамбль при наличии"],
@@ -233,7 +234,7 @@ export function PositionPanel({detail,now,fillId,feedOnline}:{detail:PositionDet
         ["Комиссия покупки",buy?money(buy.fee):"Нет записи"]]}/>
       {live&&<p className="muted">Оценка модели от {dateTime(live.forecastAt??live.at)} по Киеву.</p>}
       <ModelValues evidence={ev}/>
-      {ev?.policy&&<p className="muted">Версия правил входа · {ev.policy}</p>}
+      {ev?.policy&&<p className="muted">Правила входа · {ev.policy===smartEntryPolicy?"Новые правила погоды":ev.policy}</p>}
       {c?.wallet&&<p>Кошелёк в сигнале · <a className="weather-link" href={walletLink(c.wallet.wallet)} target="_blank" rel="noreferrer">{c.wallet.name}</a> · {price(c.wallet.price)} · {dateTime(c.wallet.receivedAt)}</p>}
       {ev&&<BookEvidence evidence={ev}/>}
     </details></section>
