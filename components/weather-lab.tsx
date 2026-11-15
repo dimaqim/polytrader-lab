@@ -4,16 +4,16 @@ import { useCallback,useEffect,useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { weatherStrategies,weatherStrategyGroups,type WeatherStrategy } from "../lib/weather/strategies";
 import { resultMoney } from "./trade-journal";
-import { cityName,pct,reasonText,strategyStatus,type Decision,type Feed,type JournalRow,type LiveQuotes,type Mark,type Position,type PositionDetail } from "./weather/data";
+import { cityName,marketDay,pct,reasonText,strategyStatus,type Decision,type Feed,type JournalRow,type LiveQuotes,type Mark,type Position,type PositionDetail } from "./weather/data";
 import { Dashboard,EquityChart,equitySeries,Sources,StrategyResults } from "./weather/dashboard";
 import { lessons } from "./weather/education";
 import { defaultFilters,Journal } from "./weather/journal";
 import { Guide,MarketCard,Wallets } from "./weather/market";
 import { DecisionPanel,Empty,PositionPanel,Row,Sheet,StrategyPanel } from "./weather/panels";
 
-const sections=[["overview","Обзор"],["markets","Рынки"],["strategies","Стратегии"],["journal","Журнал"],
-  ["wallets","Кошельки"],["analysis","Аналитика"],["guide","Справка"],["health","Источники"]] as const;
-type Section=typeof sections[number][0];
+const sections=[["overview","Ставки"],["markets","Прогнозы"],["journal","История"],["strategies","Стратегии"]] as const;
+const extraSections=[["guide","Как работает"],["analysis","Аналитика"],["health","Источники"],["wallets","Кошельки"]] as const;
+type Section=typeof sections[number][0]|typeof extraSections[number][0];
 type Detail={type:"strategy";strategy:WeatherStrategy}|{type:"position";id:string;strategy:WeatherStrategy;token:string;title:string;fillId?:string}|{type:"decision";id:string};
 
 export function WeatherLab({authenticated}:{authenticated:boolean}) {
@@ -24,6 +24,7 @@ export function WeatherLab({authenticated}:{authenticated:boolean}) {
   const [error,setError]=useState("");
   const [busy,setBusy]=useState(false);
   const [city,setCity]=useState("");
+  const [day,setDay]=useState("");
   const [filters,setFilters]=useState(defaultFilters);
   const [now,setNow]=useState(()=>Date.now());
   const snapshot=quotes?.snapshot;
@@ -44,7 +45,7 @@ export function WeatherLab({authenticated}:{authenticated:boolean}) {
         setNow(Date.now());
         setError("");
       }
-    }catch{if(!signal?.aborted)setError("Weather Lab временно недоступен. Повторите обновление.");}
+    }catch{if(!signal?.aborted)setError("Погодные данные временно недоступны. Повторите обновление.");}
   },[]);
   useEffect(()=>{
     const controller=new AbortController();
@@ -82,8 +83,16 @@ export function WeatherLab({authenticated}:{authenticated:boolean}) {
     },["buys","sells"].includes(row.category)?row.id:undefined);
   };
   const showJournal=(strategy="",kind="open",group="")=>{setDetail(null);setFilters({...defaultFilters,strategy,kind,group});setTab("journal");};
-  const visibleMarkets=feed?.markets.filter(e=>(!city||e.station.city===city)&&((e.end>now&&e.contracts.some(c=>c.open))
-    ||feed.positions.some(p=>p.event===e.id)))??[];
+  const availableMarkets=feed?.markets.filter(e=>(e.end>now&&e.contracts.some(c=>c.open))
+    ||feed.positions.some(p=>p.event===e.id))??[];
+  const extraActive=extraSections.some(([id])=>id===tab);
+  const days=[...new Set(availableMarkets.map(m=>m.date))].sort();
+  const selectedDay=days.includes(day)?day:days.find(d=>d>=new Date(now).toLocaleDateString("sv-SE",{timeZone:"Europe/Kyiv"}))??days[0]??"";
+  const marketsForDay=availableMarkets.filter(e=>e.date===selectedDay);
+  const forecastCities=[...new Set(marketsForDay.map(m=>m.station.city))];
+  const forecastCity=forecastCities.find(candidate=>candidate===city)??"";
+  const visibleMarkets=marketsForDay.filter(e=>!forecastCity||e.station.city===forecastCity)
+    .sort((a,b)=>cityName(a.station.city).localeCompare(cityName(b.station.city),"ru")||a.kind.localeCompare(b.kind));
   const quoteEvents=tab==="markets"?visibleMarkets.map(e=>e.id).join(","):"";
   useEffect(()=>{
     const controller=new AbortController();
@@ -115,11 +124,16 @@ export function WeatherLab({authenticated}:{authenticated:boolean}) {
     if(!feed)return <Empty>{error?"Данные пока недоступны.":"Загружаем данные…"}</Empty>;
     switch(tab) {
       case "overview":return <Dashboard feed={feed} run={run} banks={banks} now={now} authenticated={authenticated} busy={busy} mutate={mutate}
-        openPosition={openPosition} openFill={f=>openPosition(f,f.id)} openDecision={openDecision} journal={()=>showJournal()}
-        groupJournal={group=>showJournal("","buys",group)}/>;
+        openPosition={openPosition} openFill={f=>openPosition(f,f.id)} showHistory={kind=>showJournal("",kind)}/>;
       case "markets":return <div className="weather-stack">
-        <label className="weather-city">Город<select value={city} onChange={e=>setCity(e.target.value)}>
-          <option value="">Все города</option>{cities.map(c=><option key={c} value={c}>{cityName(c)}</option>)}</select></label>
+        <div className="run weather-forecast-filters weather-city">
+          <label>Дата погоды<select value={selectedDay} onChange={e=>{setDay(e.target.value);setCity("");}}>
+            {days.map(d=><option key={d} value={d}>{marketDay(d)}</option>)}
+          </select></label>
+          <label>Город<select value={forecastCity} onChange={e=>setCity(e.target.value)}>
+            <option value="">Все города</option>{forecastCities.map(c=><option key={c} value={c}>{cityName(c)}</option>)}
+          </select></label>
+        </div>
         {visibleMarkets.length?visibleMarkets.map(m=><MarketCard key={m.id} event={m} live={feed.live?.data.find(x=>x.event===m.id)} now={now}
           held={feed.positions.filter(p=>p.event===m.id).map(p=>p.token)}/>):<Empty>Рынков для выбранного города пока нет.</Empty>}
       </div>;
@@ -137,10 +151,18 @@ export function WeatherLab({authenticated}:{authenticated:boolean}) {
       case "health":return <Sources view={view} feed={feed} source={source} busy={busy} mutate={mutate}/>;
     }
   };
-  return <section className="weather" aria-label="Weather Lab">
-    <div className="weather-nav-line"><nav className="combo-filters weather-tabs" aria-label="Разделы Weather Lab">
+  return <section className="weather" aria-label="Виртуальные ставки на погоду">
+    <div className="weather-nav-line"><nav className="combo-filters weather-tabs" aria-label="Разделы погоды">
       {sections.map(([id,label])=><button key={id} type="button" aria-pressed={tab===id} onClick={()=>setTab(id)}>{label}</button>)}
     </nav><button className="icon-action weather-refresh" aria-label="Обновить данные" onClick={()=>void refresh()}><RefreshCw size={16}/></button></div>
+    {extraActive?<nav className="combo-filters" aria-label="Дополнительные разделы погоды">
+      {extraSections.map(([id,label])=><button key={id} aria-pressed={tab===id} onClick={()=>setTab(id)}>{label}</button>)}
+    </nav>:<details className="weather-extra">
+      <summary>Справка и аналитика</summary>
+      <nav className="weather-extra-links" aria-label="Справка и аналитика">
+        {extraSections.map(([id,label])=><button className="text-action" key={id} onClick={()=>setTab(id)}>{label}</button>)}
+      </nav>
+    </details>}
     {error&&!detail&&<p role="status" className="notice">{error}</p>}
     {inTab()}
     {detail&&(authenticated||detail.type==="strategy")&&<Sheet title={detail.type==="strategy"?weatherStrategies[detail.strategy]:

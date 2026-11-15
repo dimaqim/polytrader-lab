@@ -1,21 +1,21 @@
 "use client";
 
-import { ArrowUpRight, ChevronDown, CircleHelp, CloudSun, Layers3, List, Plus, Settings, Users, WalletCards, X } from "lucide-react";
+import { ArrowUpRight, ChevronDown, CircleHelp, CloudSun, Layers3, Plus, Settings, WalletCards, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { seedWallet } from "../lib/strategies";
 import type { Run, WorkspaceData } from "../lib/workspace";
 import { WeatherLab } from "./weather-lab";
+import { WeatherBasics } from "./weather/market";
 import { ComboJournal } from "./combo-journal";
 import { TradeJournal, dateTime, money, resultMoney, shortAddress, walletLink } from "./trade-journal";
 
 const tabs = [
-  { id: "history", title: "Сделки", icon: List },
-  { id: "copy", title: "Трейдеры", icon: Users },
-  { id: "strategies", title: "Мои тесты", icon: WalletCards },
-  { id: "combos", title: "Комбо", icon: Layers3 },
-  { id: "weather", title: "Погода", icon: CloudSun },
+  { id: "history", title: "Сделки" },
+  { id: "copy", title: "Трейдеры" },
+  { id: "strategies", title: "Тесты" },
+  { id: "combos", title: "Комбо" },
 ] as const;
-type Page = typeof tabs[number]["id"] | "settings";
+type Page = typeof tabs[number]["id"] | "settings" | "weather";
 type TelegramApp = { initData: string; ready: () => void; expand: () => void; colorScheme?: string };
 type Pair = { code: string; secret: string; url: string };
 
@@ -124,12 +124,12 @@ function readPage(): Page {
   const hash = window.location.hash.slice(1);
   if (hash === "settings" || hash === "start") return hash === "start" ? "strategies" : "settings";
   if (hash === "portfolio" || hash === "analytics") return "strategies";
-  return tabs.find(tab => tab.id === hash)?.id ?? "history";
+  return tabs.find(tab => tab.id === hash)?.id ?? "weather";
 }
 
 export function Workspace() {
   const [data, setData] = useState<WorkspaceData | null>(null);
-  const [page, setPage] = useState<Page>("history");
+  const [page, setPage] = useState<Page>("weather");
   const [dialog, setDialog] = useState<"start" | "auth" | "help" | null>(null);
   const [theme, setTheme] = useState("light");
   const [wallet, setWallet] = useState(seedWallet);
@@ -218,14 +218,15 @@ export function Workspace() {
     finally { setBusy(false); }
   };
   const wallets = data?.wallets.filter(w => (w.name + " " + w.address).toLowerCase().includes(search.trim().toLowerCase())) ?? [];
-  const titles = { history: "Журнал сделок", copy: "Трейдеры", strategies: "Мои тесты", combos: "Крупные комбо", weather: "Weather Lab", settings: "Настройки" };
+  const titles = { history: "Сделки копирования", copy: "Трейдеры", strategies: "Тесты копирования", combos: "Крупные комбо", weather: "Погода", settings: "Настройки" };
+  const otherPage = tabs.some(tab => tab.id === page);
   const monitor = data?.health.find(item => item.source === "neon");
   const upstream = data?.health.find(item => item.source === "polymarket");
   const healthy = !!monitor && Date.now() - Date.parse(monitor.at) < 180_000 && monitor.details.sections?.every(Boolean)
     && !!upstream && Date.now() - Date.parse(upstream.at) < 600_000 && Object.values(upstream.details).every(Boolean);
   return <div className="app-shell">
     <header className="app-bar">
-      <a className="wordmark" href="#history" onClick={e => { e.preventDefault(); navigate("history"); }}>
+      <a className="wordmark" href="#weather" onClick={e => { e.preventDefault(); navigate("weather"); }}>
         <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>PolyTrader Lab
       </a>
       <div className="app-actions">
@@ -241,13 +242,16 @@ export function Workspace() {
             copy: "Выберите, чьи покупки отслеживать",
             strategies: "Отдельный виртуальный банк на каждый тест",
             combos: "Ставки трейдеров Polymarket от $2 000",
-            weather: "Температурные контракты и виртуальные сделки",
+            weather: "Прогнозы и виртуальные ставки",
             settings: data?.user ? data.user.name : "Telegram и уведомления",
           }[page]}</p></div>
         {(page === "history" || page === "strategies") && <button className="action new-test" onClick={() => openStart()} disabled={loading}><Plus size={17} /> Новый тест</button>}
       </header>
       {offline && <div className="notice" role="status">Данные не обновились. <button onClick={refresh}>Повторить</button></div>}
       {notice && !dialog && <p className="notice" role="status">{notice}</p>}
+      {otherPage && <nav className="combo-filters other-market-tabs" aria-label="Копирование и комбо">
+        {tabs.map(({id,title})=><button key={id} aria-pressed={page===id} onClick={()=>navigate(id)}>{title}</button>)}
+      </nav>}
       {loading ? <p className="loading" role="status">Загружаем приложение…</p> : <>
         {page === "history" && <TradeJournal authenticated={!!data?.user} onStart={() => openStart()} onLogin={openLogin} />}
         {page === "copy" && <section className="section">
@@ -284,21 +288,25 @@ export function Workspace() {
         </section>}
       </>}
     </main>
-    <nav className="tabs tabs-five" aria-label="Разделы">
-      {tabs.map(({ id, title, icon: Icon }) => <a key={id} href={"#" + id} aria-current={page === id ? "page" : undefined}
-        onClick={e => { e.preventDefault(); navigate(id); }}><Icon size={21} aria-hidden="true" />{title}</a>)}
+    <nav className="tabs tabs-two" aria-label="Разделы приложения">
+      <a href="#weather" aria-current={page==="weather"?"page":undefined} onClick={e=>{e.preventDefault();navigate("weather");}}>
+        <CloudSun size={21} aria-hidden="true"/>Погода
+      </a>
+      <a href="#history" aria-current={otherPage?"page":undefined} onClick={e=>{e.preventDefault();if(!otherPage)navigate("history");}}>
+        <Layers3 size={21} aria-hidden="true"/>Копирование и комбо
+      </a>
     </nav>
-    {dialog && <Dialog title={dialog === "start" ? "Новый тест копирования" : dialog === "auth" ? "Вход через Telegram" : "Как работает копирование"}
+    {dialog && <Dialog title={dialog === "start" ? "Новый тест копирования" : dialog === "auth" ? "Вход через Telegram" : page==="weather" ? "Как работают ставки на погоду" : "Как работает копирование"}
       close={() => { setDialog(null); setNotice(""); setPair(null); }}>
       {notice && <p className="notice" role="status">{notice}</p>}
       {dialog === "start" && data && <StartForm data={data} wallet={wallet} busy={busy} submit={value => void mutate(async () => {
         await api("experiments", value); setDialog(null); navigate("strategies");
       }, "Тест запущен. Бот ждёт следующую покупку выбранного трейдера.")} />}
-      {dialog === "help" && <div className="help">
+      {dialog === "help" && (page==="weather"?<div className="help"><WeatherBasics/></div>:<div className="help">
         <p><strong>Трейдер покупает.</strong> Бот замечает покупку выбранного кошелька после начала теста.</p>
         <p><strong>Бот проверяет вход.</strong> Учитывает текущую цену, доступный объём и ваши лимиты. В ручном режиме сначала спрашивает в чате.</p>
         <p><strong>Позиция закрывается при расчёте Polymarket.</strong> Продажи трейдера не закрывают вашу позицию. Отклонённые входы и их причины видны в «Пропущенных».</p>
-      </div>}
+      </div>)}
       {dialog === "auth" && <div className="help">
         <p>Откройте бота, чтобы подтвердить вход и увидеть свои тесты.</p>
         {pair ? <a className="action" href={pair.url} target="_blank" rel="noreferrer">Подтвердить в Telegram <ArrowUpRight size={15} /></a>

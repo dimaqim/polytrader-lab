@@ -5,7 +5,7 @@ import { ArrowLeft, ArrowUpRight, ChevronRight } from "lucide-react";
 import { weatherStrategies, weatherStrategyGroup, risk, type WeatherStrategy } from "../../lib/weather/strategies";
 import { dateTime, money, walletLink } from "../trade-journal";
 import { exits, lessons } from "./education";
-import { actionName,cash,cityName,currentMark,kindName,liquidValue,marketDay,marketUrl,metrics,modelName,needsStream,pct,pnl,price,qty,quoteIssue,reasonText,sourceName,strategyStatus,tone,
+import { actionName,cash,cityName,currentMark,kindName,liquidValue,marketDay,marketUrl,metrics,modelName,needsStream,outcomeName,pct,pnl,price,qty,quoteIssue,reasonText,sourceName,strategyStatus,tone,
   type Bank,type Decision,type Feed,type Mark,type PositionDetail,type Run,type Evidence } from "./data";
 
 export function Sheet({title,onClose,children}:{title:string;onClose:()=>void;children:ReactNode}) {
@@ -70,7 +70,7 @@ export function StrategyPanel({strategy,bank,run,feed,now,busy,onToggle,showJour
     <section className="run"><h3>Результаты стратегии</h3>
       {bank?<Facts items={[
         ["Стартовый банк",money(bank.initial)],["Свободно",money(bank.cash)],["Вложено",money(bank.locked)],
-        ["Реализовано",<Result value={bank.realized}/>],["Открытые позиции",<Result value={unrealized}/>],["Общий PnL",<Result value={total}/>],
+        ["Итог закрытых",<Result value={bank.realized}/>],["Открытые позиции",<Result value={unrealized}/>],["Общий итог",<Result value={total}/>],
         ["Сигналы",bank.total],["Покупки / продажи",bank.buys+" / "+bank.sells],["Открыто / закрыто",bank.open+" / "+bank.closed],
         ["Доля прибыльных",bank.closed?pct(bank.wins/bank.closed):"Нет закрытых"],["Комиссии",money(bank.fees)],
         ["Макс. просадка",money(bank.max_drawdown)],["Последняя запись",bank.last?dateTime(bank.last):"Записей пока нет"],
@@ -181,7 +181,7 @@ export function PositionPanel({detail,now,fillId,feedOnline}:{detail:PositionDet
     steps.push({key:item.id,at:item.evaluated_at?Number(item.evaluated_at):+new Date(item.at),label:actionName[item.action]??"Решение",detail:reasonText(item.reason)});
   }
   return <>
-    <section className="run weather-position-summary"><h3>{p.outcome} · {marketDay(p.market.date)}</h3>
+    <section className="run weather-position-summary"><h3>{outcomeName(p.outcome)} · {marketDay(p.market.date)}</h3>
       <p>{kindName(p.market.kind)} · {p.market.station.code}</p>
       <p className="muted">{weatherStrategyGroup(p.strategy)?.label} · {weatherStrategies[p.strategy]} · {open?"Открыта":"Закрыта"}</p>
       <p><strong>Почему открылась</strong> · {purchaseReason}{c?.wallet?" · "+c.wallet.name:""}</p>
@@ -249,8 +249,8 @@ export function DecisionPanel({row}:{row:Decision}) {
   return <><section className="run"><h3>{reasonText(row.reason)}</h3>
     <p>{cityName(row.market.station.city)} · {kindName(row.market.kind)} · {dateTime(row.at)}</p>
     {(row.repetitions??1)>1&&row.first_at&&<p>Проверок с этой причиной: {row.repetitions}. Первая {dateTime(row.first_at)}, последняя {dateTime(row.at)} по Киеву.</p>}
-    {c&&<Facts items={[["Исход",(c.yes?"YES ":"NO ")+c.contract.bucket.label],["Оценка",pct(c.probability)],
-      ["Ask",price(c.reference)],["Преимущество",price(c.ev)]]}/>}
+    {c&&<Facts items={[["Исход",outcomeName((c.yes?"YES ":"NO ")+c.contract.bucket.label)],["Оценка",pct(c.probability)],
+      ["Цена покупки",price(c.reference)],["Преимущество",price(c.ev)]]}/>}
     <a className="weather-link" href={marketUrl(row.market,c?.contract.slug)} target="_blank" rel="noreferrer">Открыть рынок на Polymarket <ArrowUpRight size={14}/></a>
   </section><section className="run"><h3>Данные решения</h3><ModelValues evidence={row.evidence}/><BookEvidence evidence={row.evidence}/></section></>;
 }

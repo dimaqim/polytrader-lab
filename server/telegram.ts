@@ -28,11 +28,9 @@ function appButton(text: string, section = "") {
 }
 const menu = () => ({
   inline_keyboard: [
-    appButton("Открыть журнал сделок", "history"),
-    appButton("Погода · позиции и цены", "weather"),
-    appButton("Начать копировать", "start"),
-    [...appButton("Трейдеры", "copy"), ...appButton("Комбо", "combos")],
-    [{ text: "Мои тесты", callback_data: "tests" }, { text: "Помощь", callback_data: "help" }],
+    appButton("Погода · ставки и прогнозы", "weather"),
+    [...appButton("Сделки копирования", "history"), ...appButton("Комбо", "combos")],
+    [{ text: "Как работает погода", callback_data: "help" }],
   ].filter(row => row.length),
 });
 async function reply(chatId: string, text: string) {
@@ -88,8 +86,8 @@ export async function deliverNotifications(signalId?: string, urgentOnly = false
 async function commandReply(action: string, user: string) {
   const sql = database();
   switch (action) {
-    case "start": return "В журнале видно, кого вы копируете, когда вошли и чем закончилась сделка. Для первого теста выберите «Начать копировать». Все суммы виртуальные.";
-    case "help": return "Выберите трейдера и сумму на одну сделку. Бот замечает его покупки и проверяет текущую цену, доступный объём и лимиты вашего теста.\n\nВ режиме «С подтверждением» бот спросит перед покупкой. Позиция закрывается после официального расчёта рынка. Продажи трейдера не копируются.";
+    case "start": return "Откройте «Погода», чтобы посмотреть открытые ставки, прогнозы по городам и результат закрытых позиций. Все суммы виртуальные.";
+    case "help": return "Бот сравнивает прогноз температуры с ценой Polymarket и проверяет объём заявок перед виртуальной покупкой. В карточке ставки видно, почему бот купил и когда ждёт итог.\n\nБот может продать раньше, если цена подходит или прогноз сильно ухудшился. Остальные ставки рассчитываются по официальному исходу Polymarket.";
     case "status": return systemHealth();
     case "weather": {
       const [status, runs] = await sql.transaction([
@@ -104,7 +102,7 @@ async function commandReply(action: string, user: string) {
       const live=feed&&Date.now()- +new Date(feed.checked_at)<45_000;
       const source=live&&feed.source==='WEBSOCKET_L2' ? feed.route==='neon'?"Поток Polymarket через Neon":"Прямой поток Polymarket"
         :live&&feed.source==='REST_VERIFIED_PAPER'?"Резервные снимки Polymarket":"Ожидаем свежие котировки";
-      return ["Weather Lab · виртуальный тест",source,run ? `Открыто позиций ${run.opened} · зафиксировано ${money(run.pnl)}` : "Погодный тест ещё не запущен.",
+      return ["Погода · виртуальный тест",source,run ? `Открыто ставок ${run.opened} · итог закрытых ${money(run.pnl)}` : "Погодный тест ещё не запущен.",
         "Откройте «Погода», чтобы увидеть цены, время входа и условия выхода."].join("\n");
     }
     case "strategies":

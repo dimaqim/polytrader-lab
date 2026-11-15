@@ -53,6 +53,12 @@ export type JournalRow={id:string;experiment:string|null;strategy:WeatherStrateg
 
 export const cityName=(city:string)=>({Seoul:"Сеул",Tokyo:"Токио",London:"Лондон",Munich:"Мюнхен","New York City":"Нью-Йорк",Dallas:"Даллас"}[city]??city);
 export const kindName=(kind:string)=>kind==="highest"?"Максимальная температура":kind==="lowest"?"Минимальная температура":"Температура";
+export const sideName=(yes:boolean)=>yes?"Да":"Нет";
+export const bucketName=(label:string)=>label.replace(/ or below$/i," и ниже").replace(/ or higher$/i," и выше");
+export function outcomeName(outcome:string) {
+  const match=/^(YES|NO) (.+)$/.exec(outcome);
+  return match ? sideName(match[1]==="YES")+" · "+bucketName(match[2]) : outcome;
+}
 export const price=(value:number|null|undefined)=>value==null?"—":(value*100).toLocaleString("ru",{maximumFractionDigits:2})+"¢";
 export const pct=(value:number|null|undefined)=>value==null?"—":(value*100).toLocaleString("ru",{maximumFractionDigits:1})+"%";
 export const qty=(value:number)=>value.toLocaleString("ru",{maximumFractionDigits:4});
@@ -72,7 +78,7 @@ export const reasons:Record<string,string>={
   PUBLIC_WALLET_BUY:"Обнаружена публичная покупка трейдера",PUBLIC_WALLET_SELL:"Обнаружена публичная продажа того же трейдера",
   OBSERVED_RANGE_EXCLUDED:"Зафиксированная температура исключила диапазон",CONSERVATIVE_DISTRIBUTION_EDGE:"Среди диапазонов найдено преимущество",
   WEATHER_VALUE:"Консервативная оценка выше полной цены",WEATHER_VALUE_AND_WALLET:"Погодное преимущество подтверждено покупкой трейдера",
-  REMAINING_DAY_EDGE:"Прогноз на остаток дня даёт преимущество",CALIBRATED_TAIL_EDGE:"У недорогого YES есть преимущество после комиссии",
+  REMAINING_DAY_EDGE:"Прогноз на остаток дня даёт преимущество",CALIBRATED_TAIL_EDGE:"У недорогого контракта «Да» есть преимущество после комиссии",
   FORECAST_REVISION_EXCEEDS_MARKET:"Модели изменили оценку сильнее рынка",FAIR_VALUE_EXIT:"Чистая цена продажи выше оценки удержания",
   FORECAST_REVERSAL_RISK:"Новый прогноз ухудшил оценку позиции",REPRICING_TARGET:"Достигнута цель переоценки",
   SETTLEMENT_HOLD:"Последняя проверка дала решение удерживать до расчёта",PAPER_FILLED:"Виртуальная покупка исполнена",

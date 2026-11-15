@@ -1,8 +1,8 @@
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { weatherStrategies,weatherStrategyGroups,type WeatherStrategy } from "../../lib/weather/strategies";
 import { dateTime,money } from "../trade-journal";
-import { actionName,cityName,currentMark,kindName,liquidValue,marketDay,metrics,pct,price,reasonText,sourceName,strategyStatus,timeLeft,
-  type Bank,type Feed,type Fill,type Position,type Run,type Decision,type Readiness } from "./data";
+import { actionName,cityName,kindName,marketDay,metrics,outcomeName,pct,sourceName,strategyStatus,
+  type Bank,type Feed,type Fill,type Position,type Run,type Readiness } from "./data";
 import { Empty,Facts,Result,Row } from "./panels";
 import { StorageStatus } from "./storage";
 
@@ -25,85 +25,66 @@ export function equitySeries(feed:Feed,run:string,strategies:WeatherStrategy[]) 
   return [...byTime].sort(([a],[b])=>a.localeCompare(b)).map(([at,group])=>({at,
     equity:group.size===strategies.length&&[...group.values()].every(n=>n!=null)?[...group.values()].reduce<number>((sum,n)=>sum+(n??0),0):null}));
 }
-export function Dashboard({feed,run,banks,now,authenticated,busy,mutate,openPosition,openFill,openDecision,journal,groupJournal}:{
+export function Dashboard({feed,run,banks,now,authenticated,busy,mutate,openPosition,openFill,showHistory}:{
   feed:Feed;run?:Run;banks:Bank[];now:number;authenticated:boolean;busy:boolean;
   mutate:(path:string,value:object)=>Promise<boolean>;openPosition:(p:Position)=>void;openFill:(f:Fill)=>void;
-  openDecision:(d:Decision)=>void;journal:()=>void;groupJournal:(group:string)=>void;
+  showHistory:(kind:string)=>void;
 }) {
-  const [ready,online]=[feed.readiness?.payload.ready,feed.readiness!=null&&feed.readiness.payload.process&&now-+new Date(feed.readiness.checked_at)<45000];
+  const online=!!feed.readiness?.payload.process&&now-+new Date(feed.readiness.checked_at)<45_000;
+  const ready=online&&feed.readiness?.payload.ready;
   const active=!!run&&run.status!=="stopped"&&+new Date(run.ends_at)>now;
-  const status=!run?"Ожидает запуска":run.status==="stopped"?"Остановлен":!active?"Срок новых входов завершён":run.status==="paused"?"На паузе":"Идёт";
+  const status=!run?"Тест не запущен":!active?"Новые покупки завершены":run.status==="paused"?"Покупки на паузе"
+    :ready?"Тест идёт":"Покупки ждут данных";
+  const openPositions=feed.positions.filter(p=>p.experiment===run?.id);
+  const days=[...new Set(openPositions.map(p=>p.market_day??""))].sort();
+  const sum=(key:"cash"|"initial"|"locked"|"realized")=>banks.reduce((total,b)=>total+b[key],0);
   const unrealized=banks.map(b=>metrics(b,feed,now).unrealized);
   const subtotal=unrealized.every(p=>p!=null)?unrealized.reduce<number>((sum,x)=>sum+(x??0),0):null;
-  const sum=(key:"cash"|"initial"|"locked"|"realized")=>banks.reduce((total,b)=>total+b[key],0);
-  const source=online?feed.readiness?.payload.source:undefined;
-  const openPositions=feed.positions.filter(p=>p.experiment===run?.id);
-  const assessed=online ? openPositions.flatMap(p=>{
-    const mark=currentMark(feed.marks.find(m=>m.strategy===p.strategy&&m.experiment===p.experiment&&m.token===p.token),p,now);
-    const value=liquidValue(mark,p);
-    return mark&&value!=null?[{at:mark.at,profit:value-p.basis}]:[];
-  }) : [];
-  const lastMark=Math.max(0,...assessed.map(mark=>mark.at));
+  const recentFills=feed.fills.filter(f=>f.experiment===run?.id).slice(0,4);
   return <div className="weather-stack">
-    <section className="run weather-overview"><div className="weather-overview-title">
-      <div><h2>Виртуальная торговля</h2><p>{run ? "14-дневный эксперимент" : "Эксперимент Weather Lab"}</p></div>
-      <span className={"trade-state "+(active&&run?.status==="running"&&ready?"active":"")}>{status}</span></div>
-      <div className="weather-health-line"><span>{source?sourceName[source]:online?"Ожидаем котировки":"Сборщик недоступен"}</span>
-        {feed.readiness?.payload.ws.socket&&<span>{feed.readiness.payload.ws.route==="neon"?"Поток через Neon":"Прямой поток"}</span>}
-        {source!=="REST_VERIFIED_PAPER"&&feed.readiness?.payload.rest?.lastResponse&&!feed.readiness.payload.ws.socket&&<span>REST отвечает</span>}
-        {active&&run&&<span>До конца входов {timeLeft(+new Date(run.ends_at),now)}</span>}</div>
-      {online&&feed.readiness&&<p className="muted">Проверка источников {dateTime(feed.readiness.checked_at)} по Киеву{!ready?" · новые входы ждут данных":""}</p>}
-      {run&&<p className="muted">{dateTime(run.starts_at)} — {dateTime(run.ends_at)} по Киеву</p>}
-      {!authenticated&&<p>Откройте Mini App из Telegram, чтобы увидеть свои сделки и управлять тестом.</p>}
-      {authenticated&&(!active?<button className="action" disabled={busy||!online||!ready} onClick={()=>void mutate("start",{})}>Запустить эксперимент</button>:
-        <details className="trade-details"><summary>Управление всем экспериментом</summary><div className="weather-actions">
-          <button className="action secondary" disabled={busy} onClick={()=>void mutate("control",{id:run.id,status:run.status==="paused"?"running":"paused"})}>{run.status==="paused"?"Возобновить входы":"Пауза всех входов"}</button>
-          <button className="text-action" disabled={busy} onClick={()=>{if(window.confirm("Завершить новые входы всех стратегий до конца этого теста?"))void mutate("control",{id:run.id,status:"stopped"});}}>Завершить входы</button>
-        </div></details>)}
+    <section className="run weather-overview">
+      <div className="weather-overview-title">
+        <h2>Виртуальные ставки</h2>
+        <span className={"trade-state "+(active&&run?.status==="running"&&ready?"active":"")}>{status}</span>
+      </div>
+      {banks.length>0&&<Facts items={[
+        ["Открыто",openPositions.length],["Вложено",money(sum("locked"))],["Итог закрытых",<Result value={sum("realized")}/>],
+      ]}/>}
+      {!authenticated&&<p className="muted">Откройте приложение из Telegram, чтобы увидеть свои ставки и их результат.</p>}
+      {authenticated&&!active&&<button className="action" disabled={busy||!ready} onClick={()=>void mutate("start",{})}>Начать погодный тест</button>}
+      {run&&<details className="trade-details"><summary>Баланс и управление тестом</summary>
+        <Facts items={[["Стартовый банк",money(sum("initial"))],["Свободные средства",money(sum("cash"))],
+          ["Общий результат",subtotal==null?"Нужны свежие цены":<Result value={subtotal+sum("realized")}/>]]}/>
+        <p className="muted">Новые покупки разрешены до {dateTime(run.ends_at)} по Киеву.</p>
+        {active&&authenticated&&<div className="weather-actions">
+          <button className="action secondary" disabled={busy} onClick={()=>void mutate("control",{id:run.id,status:run.status==="paused"?"running":"paused"})}>{run.status==="paused"?"Возобновить покупки":"Пауза покупок"}</button>
+          <button className="text-action" disabled={busy} onClick={()=>{if(window.confirm("Завершить новые покупки всех стратегий до конца этого теста?"))void mutate("control",{id:run.id,status:"stopped"});}}>Завершить покупки</button>
+        </div>}
+      </details>}
     </section>
-    {banks.length>0&&<section className="run"><h3>Сводка по виртуальным банкам</h3><Facts items={[
-      ["Стартовый банк",money(sum("initial"))],["Свободно",money(sum("cash"))],["Вложено в позиции",money(sum("locked"))],
-      ["Зафиксированный результат",<Result value={sum("realized")}/>],
-      ["Результат при продаже открытых",subtotal==null?"Оценены не все":<Result value={subtotal}/>],
-      ["Общий результат",subtotal==null?"Оценены не все":<Result value={subtotal+sum("realized")}/>],
-    ]}/><p className="muted">Сумма {banks.length} независимых банков по {money(banks[0].initial)}. Стратегии могут входить в один рынок параллельно.</p>
-      {openPositions.length>0&&<p className="muted">Цена продажи всего остатка рассчитана для {assessed.length} из {openPositions.length} открытых позиций.
-        {subtotal==null&&assessed.length>0?<> По оценённой части <Result value={assessed.reduce((sum,x)=>sum+x.profit,0)}/>.</>:null}
-        {subtotal==null?" Общий результат появится, когда подтверждён весь остаток.":""}</p>}
-      {lastMark>0&&<p className="muted">Проверка продажи {dateTime(lastMark)} по Киеву.</p>}
-      <details className="trade-details"><summary>График общего капитала</summary>
-        <EquityChart rows={equitySeries(feed,run!.id,banks.map(b=>b.strategy))}/>
-      </details>
+    {authenticated&&<section className="weather-stack" aria-label="Открытые ставки">
+      <h2 className="weather-section-title">Открытые ставки</h2>
+      {days.length===0&&<Empty>Открытых ставок в текущем тесте пока нет.</Empty>}
+      {days.map(day=><section className="weather-stack" key={day}>
+        <h3 className="weather-section-title">{day?marketDay(day):"Дата уточняется"}</h3>
+        <div className="run weather-rows">{openPositions.filter(p=>(p.market_day??"")===day).map(p=><Row key={p.strategy+"/"+p.token}
+          title={cityName(p.city)+" · "+outcomeName(p.outcome)}
+          note={<>{kindName(p.kind)} · {weatherStrategies[p.strategy]}
+            {p.market_end!=null&&<><br/>{p.market_end>now?"Итог после "+dateTime(p.market_end)+" по Киеву":"Ожидаем итог Polymarket"}</>}
+          </>}
+          value={<><strong>{money(p.basis)}</strong><small>Вложено</small></>}
+          onClick={()=>openPosition(p)}/>)}</div>
+      </section>)}
+      {feed.positions.length>openPositions.length&&<button className="text-action weather-start" onClick={()=>showHistory("open")}>Открытые ставки прошлых тестов</button>}
     </section>}
-    {banks.length>0&&<section className="weather-stack">
-      <h3 className="weather-section-title">Откуда берутся сделки</h3>
-      {weatherStrategyGroups.map(group=>{
-        const members=banks.filter(bank=>group.strategies.includes(bank.strategy));
-        if(!members.length)return null;
-        const totals=members.reduce((sum,bank)=>({initial:sum.initial+bank.initial,cash:sum.cash+bank.cash,realized:sum.realized+bank.realized,
-          open:sum.open+bank.open,buys:sum.buys+bank.buys,sells:sum.sells+bank.sells}),{initial:0,cash:0,realized:0,open:0,buys:0,sells:0});
-        return <article className="run weather-group" key={group.id}>
-          <Row title={group.label} note={group.note} onClick={()=>groupJournal(group.id)}/>
-          <Facts items={[["Стартовый банк",money(totals.initial)],["Свободно",money(totals.cash)],
-            ["Зафиксировано",<Result value={totals.realized}/>],["Открыто",totals.open],["Покупки / продажи",totals.buys+" / "+totals.sells]]}/>
-        </article>;
-      })}
+    {recentFills.length>0&&<section className="weather-stack">
+      <h2 className="weather-section-title">Последние операции</h2>
+      <div className="run weather-rows">{recentFills.map(f=><Row key={f.id}
+        title={actionName[f.side]+" · "+cityName(f.city)+" · "+outcomeName(f.outcome)}
+        note={weatherStrategies[f.strategy]+" · "+dateTime(f.at)+" по Киеву"}
+        value={f.pnl==null?money(f.gross+f.fee):<Result value={f.pnl}/>} onClick={()=>openFill(f)}/>)}</div>
+      <button className="text-action weather-start" onClick={()=>showHistory("sells")}>Все продажи и выплаты</button>
     </section>}
-    <section className="weather-stack"><h3 className="weather-section-title">Открытые позиции</h3>
-      {feed.positions.length?<div className="run weather-rows">{feed.positions.slice(0,6).map(p=><Row key={p.experiment+"/"+p.strategy+"/"+p.token}
-        title={cityName(p.city)+" · "+p.outcome} note={(p.market_day?marketDay(p.market_day)+" · ":"")+kindName(p.kind)+" · "+weatherStrategies[p.strategy]} value={money(p.basis)} onClick={()=>openPosition(p)}/>)}</div>
-        :<Empty>Открытых виртуальных позиций пока нет.</Empty>}
-      {feed.positions.length>6&&<button className="text-action weather-start" onClick={journal}>Все открытые позиции</button>}
-    </section>
-    <section className="weather-stack"><h3 className="weather-section-title">Последние исполнения</h3>
-      {feed.fills.length?<div className="run weather-rows">{feed.fills.slice(0,4).map(f=><Row key={f.id}
-        title={actionName[f.side]+" · "+cityName(f.city)+" · "+f.outcome} note={weatherStrategies[f.strategy]+" · "+dateTime(f.at)}
-        value={price(f.gross/f.shares)} onClick={()=>openFill(f)}/>)}</div>:<Empty>Виртуальных исполнений пока нет.</Empty>}
-    </section>
-    <section className="weather-stack"><h3 className="weather-section-title">Последние пропуски</h3>
-      {feed.decisions.length?<div className="run weather-rows">{feed.decisions.slice(0,3).map(d=><Row key={d.id} title={cityName(d.city)+" · "+reasonText(d.reason)}
-        note={dateTime(d.at)} onClick={()=>openDecision(d)}/>)}</div>:<Empty>Записей о пропусках пока нет.</Empty>}
-    </section>
   </div>;
 }
 export function StrategyResults({feed,run,banks,now,open}:{feed:Feed;run?:Run;banks:Bank[];now:number;open:(id:WeatherStrategy)=>void}) {
@@ -112,11 +93,11 @@ export function StrategyResults({feed,run,banks,now,open}:{feed:Feed;run?:Run;ba
     bank,group:group.label,...metrics(bank,feed,now),status:strategyStatus(bank.strategy,bank,run,feed,now),
   })));
   return <div className="weather-stack">
-    <p className="muted">У каждой стратегии свой банк. ROI считается от стартового банка. Доверительный интервал использует отдельные группы «станция и день».</p>
+    <p className="muted">У каждой стратегии свой банк. Доходность считается от стартового банка.</p>
     <div className="weather-comparison-table run"><table>
       <caption className="sr-only">Сравнение виртуальных банков</caption>
       <thead><tr><th scope="col">Стратегия</th><th scope="col">Старт / свободно</th><th scope="col">Вложено</th><th scope="col">Реализовано</th>
-        <th scope="col">Открытый PnL</th><th scope="col">Общий PnL</th><th scope="col">ROI</th><th scope="col">Открыто / покупки / продажи</th></tr></thead>
+        <th scope="col">По открытым</th><th scope="col">Общий итог</th><th scope="col">Доходность</th><th scope="col">Открыто / покупки / продажи</th></tr></thead>
       <tbody>{summary.map(({bank,group,unrealized,total,status})=><tr key={bank.strategy}>
         <th scope="row"><button className="text-action" onClick={()=>open(bank.strategy)}>{weatherStrategies[bank.strategy]}</button><small>{group} · {status}</small></th>
         <td>{money(bank.initial)} / {money(bank.cash)}</td><td>{money(bank.locked)}</td><td><Result value={bank.realized}/></td><td><Result value={unrealized}/></td><td><Result value={total}/></td>
@@ -127,7 +108,7 @@ export function StrategyResults({feed,run,banks,now,open}:{feed:Feed;run?:Run;ba
       return <article className="run weather-comparison-row" key={bank.strategy}>
         <Row title={weatherStrategies[bank.strategy]} note={group+" · "+status} onClick={()=>open(bank.strategy)}/>
         <Facts items={[["Стартовый банк",money(bank.initial)],["Свободно",money(bank.cash)],["Вложено",money(bank.locked)],["Открыто",bank.open],["Реализовано",<Result value={bank.realized}/>],
-          ["Нереализовано",<Result value={unrealized}/>],["Общий PnL",<Result value={total}/>],["ROI",total==null?"Нет оценки":pct(total/bank.initial)],
+          ["По открытым",<Result value={unrealized}/>],["Общий итог",<Result value={total}/>],["Доходность",total==null?"Нет оценки":pct(total/bank.initial)],
           ["Покупки / продажи",bank.buys+" / "+bank.sells]]}/>
       </article>;
     })}</div>

@@ -4,19 +4,19 @@ import { roundedTemperature } from "./rules.ts";
 import type { Contract, Estimate, WalletEvent, WeatherEvent } from "./types.ts";
 
 export const weatherStrategies = {
-  late: "Late Temperature Edge",
-  observation: "Official Observation Repricing",
-  revision: "Forecast Revision Edge",
-  distribution: "Weather Distribution Value",
-  smart: "Smart Weather Value",
-  smart_wallet: "Smart Weather Value + Wallets",
-  tail: "Cheap YES",
-  replay_5: "Wallet Replay · 5 с",
-  replay_15: "Wallet Replay · 15 с",
-  replay_30: "Wallet Replay · 30 с",
-  replay_60: "Wallet Replay · 60 с",
-  complete: "Complete-Set Monitor",
-  favorite: "Market Favorite",
+  late: "Прогноз на остаток дня",
+  observation: "Вход по замеру станции",
+  revision: "Вход после изменения прогноза",
+  distribution: "Несколько выгодных диапазонов",
+  smart: "Вход по выгодной цене",
+  smart_wallet: "Прогноз с подтверждением трейдера",
+  tail: "Дешёвый контракт «Да»",
+  replay_5: "Повтор за трейдером · 5 с",
+  replay_15: "Повтор за трейдером · 15 с",
+  replay_30: "Повтор за трейдером · 30 с",
+  replay_60: "Повтор за трейдером · 60 с",
+  complete: "Наблюдение за комплектами",
+  favorite: "Фаворит рынка",
 } as const;
 export type WeatherStrategy = keyof typeof weatherStrategies;
 export const strategyKeys = Object.keys(weatherStrategies) as WeatherStrategy[];

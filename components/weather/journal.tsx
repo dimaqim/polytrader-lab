@@ -1,7 +1,7 @@
 import { useEffect,useState } from "react";
 import { weatherStrategies,weatherStrategyGroup,weatherStrategyGroups } from "../../lib/weather/strategies";
 import { dateTime,money } from "../trade-journal";
-import { cityName,kindName,marketDay,pnl,price,reasonText,tone,type JournalRow } from "./data";
+import { cityName,kindName,marketDay,outcomeName,pnl,price,reasonText,tone,type JournalRow } from "./data";
 import { Empty,Row } from "./panels";
 
 export const journalSections=[["signals","Сигналы"],["buys","Покупки"],["sells","Продажи и расчёты"],["open","Открытые"],["closed","Закрытые"],["skips","Пропуски"]] as const;
@@ -67,7 +67,7 @@ export function Journal({filters,onChange,onOpen,cities,now}:{filters:Filters;on
     {!state?<Empty>Загружаем записи…</Empty>:state.error?<Empty>Журнал временно недоступен. Данные обновятся автоматически.</Empty>
       :state.rows.length===0?<Empty>По выбранным фильтрам записей пока нет.</Empty>
       :<div className="run weather-rows">{state.rows.map(row=><Row key={[row.experiment,row.strategy,row.id].join("/")}
-        title={cityName(row.city)+(row.outcome?" · "+row.outcome:"")+(row.market_day?" · "+marketDay(row.market_day):"")}
+        title={cityName(row.city)+(row.outcome?" · "+outcomeName(row.outcome):"")+(row.market_day?" · "+marketDay(row.market_day):"")}
         note={<>{row.strategy==="system"?"Проверка источников":weatherStrategyGroup(row.strategy)?.label+" · "+weatherStrategies[row.strategy]}
           {row.wallet_name&&<> · {row.wallet_name}</>}
           <br/>{kindName(row.kind)} · {dateTime(row.at)} по Киеву

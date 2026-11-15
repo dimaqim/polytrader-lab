@@ -3,7 +3,7 @@ import { ArrowUpRight } from "lucide-react";
 import { takerFee } from "../../lib/simulator";
 import type { Contract, WalletEvent, WeatherEvent } from "../../lib/weather/types";
 import { dateTime, walletLink } from "../trade-journal";
-import { cityName,kindName,marketDay,marketUrl,modelName,pct,price,qty,quoteIssue,sourceName,timeLeft,type Quote,type View } from "./data";
+import { bucketName,cityName,kindName,marketDay,marketUrl,modelName,pct,price,qty,quoteIssue,sideName,sourceName,timeLeft,type Quote,type View } from "./data";
 import { Empty } from "./panels";
 import { glossary } from "./education";
 
@@ -23,7 +23,7 @@ export function MarketCard({event,live,held,now}:{event:WeatherEvent;live?:View;
   const yields=live?.forecasts??[];
   const models=[...new Set(yields.map(row=>row.model))];
   const mostLikely=ranked[0];
-  const range=mostLikely&&live?.distribution.length?mostLikely.bucket.label:"Ожидается прогноз";
+  const range=mostLikely&&live?.distribution.length?bucketName(mostLikely.bucket.label):"Ожидается прогноз";
   return <article className="run weather-market">
     <header><div><h3>{cityName(event.station.city)}</h3><p>{kindName(event.kind)} · <time dateTime={event.date}>{marketDay(event.date)}</time></p></div>
       <span className={"trade-state "+(event.verified?"active":"loss")}>{event.verified?(live?.confidence?"Прогноз готов":"Наблюдение"):"Правила проверяются"}</span></header>
@@ -70,15 +70,15 @@ function Outcome({contract:c,live,now,held}:{contract:Contract;live?:View;now:nu
     : coverage ? "Цены исходов не прошли проверку общего распределения."
     : "Для рыночной оценки нужны свежие цены покупки и продажи всех исходов.";
   return <details className="weather-outcome"><summary>
-    <span><strong>{c.bucket.label}</strong>{held.includes(c.yes)||held.includes(c.no)?<small> · Есть позиция</small>:null}</span>
+    <span><strong>{bucketName(c.bucket.label)}</strong>{held.includes(c.yes)||held.includes(c.no)?<small> · Есть позиция</small>:null}</span>
     <span>{pct(p?.p)}</span></summary>
     <p><strong>Прогноз погоды</strong> · {pct(p?.p)}</p>
     {p?.market!=null && live && now-live.at<=15_000
       ? <p><strong>По ценам Polymarket</strong> · {pct(p.market)}</p>
       : <p className="muted">Оценка Polymarket недоступна. {marketIssue}</p>}
     {p?.coverageV2!=null&&<p className="muted">Проверочный прогноз с полным почасовым покрытием · {pct(p.coverageV2)}</p>}
-    {yesIssue&&yesIssue===noIssue ? <p className="weather-inline">{yesIssue}. Цены YES и NO пока не подтверждены.</p> :
-      ([["YES",pair?.yes,yesIssue],["NO",pair?.no,noIssue]] as const).map(([side,quote,issue])=>
+    {yesIssue&&yesIssue===noIssue ? <p className="weather-inline">{yesIssue}. Цены «Да» и «Нет» пока не подтверждены.</p> :
+      ([["Да",pair?.yes,yesIssue],["Нет",pair?.no,noIssue]] as const).map(([side,quote,issue])=>
         <OutcomeQuote key={side} side={side} quote={quote} issue={issue}/>)}
   </details>;
 }
@@ -93,13 +93,13 @@ export function Wallets({wallets,events,markets}:{wallets:{name:string;address:s
   return <div className="weather-stack"><div className="run"><h3>Как используются кошельки</h3>
     <dl className="weather-explain"><dt>Погодная модель</dt><dd>Оценивает исход по прогнозам и наблюдениям.</dd>
       <dt>Подтверждение кошельком</dt><dd>Требует погодное преимущество и публичную покупку того же исхода.</dd>
-      <dt>Wallet Replay</dt><dd>Пробует повторить наблюдаемую сделку с задержкой и проверкой реальной ликвидности. Видна публичная активность кошелька.</dd></dl></div>
+      <dt>Повтор за трейдером</dt><dd>Пробует повторить покупку с задержкой, проверкой цены и доступного объёма.</dd></dl></div>
     {wallets.map(wallet=><details className="run weather-wallet" key={wallet.address}><summary><strong>{wallet.name}</strong><small>{wallet.address.slice(0,8)}…{wallet.address.slice(-6)}</small></summary>
       <a className="weather-link" href={walletLink(wallet.address)} target="_blank" rel="noreferrer">Профиль Polymarket <ArrowUpRight size={14}/></a>
       {events.filter(e=>e.wallet===wallet.address).slice(-10).reverse().map(e=>{
         const market=markets.find(m=>m.contracts.some(c=>c.condition===e.condition));
         const c=market?.contracts.find(c=>c.condition===e.condition);
-        return <div className="weather-model" key={e.id}><strong>{e.side==="BUY"?"Покупка":e.side==="SELL"?"Продажа":e.type} · {c?(c.yes===e.token?"YES ":"NO ")+c.bucket.label:"Исход не сопоставлен"}</strong>
+        return <div className="weather-model" key={e.id}><strong>{e.side==="BUY"?"Покупка":e.side==="SELL"?"Продажа":e.type} · {c?sideName(c.yes===e.token)+" · "+bucketName(c.bucket.label):"Исход не сопоставлен"}</strong>
           <p>{market?cityName(market.station.city)+" · "+kindName(market.kind):"Рынок вне текущего каталога"} · {price(e.price)} · {qty(e.shares)} шт.</p>
           <small>Обнаружено {dateTime(e.receivedAt)} по Киеву</small>
           {market&&<p><a className="weather-link" href={marketUrl(market,c?.slug)} target="_blank" rel="noreferrer">Рынок <ArrowUpRight size={13}/></a></p>}
@@ -111,12 +111,18 @@ export function Wallets({wallets,events,markets}:{wallets:{name:string;address:s
   </div>;
 }
 export function Guide() {
-  return <div className="weather-stack"><article className="run"><h3>Как бот принимает решения</h3>
-    <ol className="weather-timeline"><li>Читает исходы и правила метеостанции.</li><li>Сравнивает прогнозы с измерениями и ценами.</li>
-      <li>Проверяет условия выбранной стратегии, комиссию и лимиты банка.</li><li>После задержки проверяет стакан повторно и записывает исполнение или причину пропуска.</li></ol></article>
+  return <div className="weather-stack"><article className="run"><h3>Как бот принимает решения</h3><WeatherBasics/></article>
     {glossary.map(([name,text])=><details className="run" key={name}><summary>{name}</summary><p>{text}</p></details>)}
-    <details className="run"><summary>Формулы</summary><p>Преимущество модельного сигнала = консервативная вероятность × $1 − ask − комиссия на контракт.</p>
-      <p>Нереализованный PnL = чистая выручка по доступным bid для всего остатка − его себестоимость.</p>
-      <p>Общий PnL = реализованный + нереализованный. ROI = общий PnL ÷ стартовый банк.</p></details>
+    <details className="run"><summary>Как считаются суммы</summary><p>Преимущество = осторожная оценка вероятности × $1 − цена и комиссия покупки за контракт.</p>
+      <p>Результат открытой позиции = сумма после комиссии, которую можно получить за весь остаток, минус его себестоимость.</p>
+      <p>Доходность = общий результат ÷ стартовый банк.</p></details>
   </div>;
+}
+export function WeatherBasics() {
+  return <dl className="weather-explain">
+    <dt>Откуда прогноз</dt><dd>Бот учитывает ECMWF IFS, GFS, ICON и замеры станции. В разделе «Прогнозы» видны оценки модели и цены Polymarket.</dd>
+    <dt>Когда покупает</dt><dd>Стратегия «Вход по выгодной цене» ищет ставку, где осторожная оценка превышает цену с комиссией более чем на 2,5¢ за контракт. Бот повторно проверяет цену и объём перед виртуальной покупкой.</dd>
+    <dt>Что означают «Да» и «Нет»</dt><dd>Для «Да» температура должна попасть в указанный диапазон. Для «Нет» она должна оказаться за его пределами.</dd>
+    <dt>Когда закрывает</dt><dd>Бот может продать раньше, если подходящая цена подтверждается или срабатывает правило ухудшения прогноза. Иначе он ждёт официальный итог Polymarket после окончания суток в городе.</dd>
+  </dl>;
 }
